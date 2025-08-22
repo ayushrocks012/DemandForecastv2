@@ -4,23 +4,21 @@ Option Explicit
 '================================================================================================
 ' Class:       cDataManager
 ' Purpose:     Encapsulates all data loading, validation, and caching logic.
-' Version:     3.0
+' Version:     3.1
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
-' V3.0:        - REFACTOR: Removed local logging functions and now uses mUtilities.
-'              - REFACTOR: Replaced all inline key-building logic with calls to the new
-'                cKeyBuilder class.
-'              - REFACTOR: Added new public properties 'HistoryMonths' and 'ForecastMonths'
-'                to share date headers with other classes without exposing raw data arrays,
-'                improving encapsulation.
+' V3.1:        - REFACTOR: Removed the unused private variable 'm_wsLog' and the
+'                corresponding 'logSheet' parameter from the Init procedure, as all
+'                logging is now handled by the mUtilities module.
+' V3.0:        - REFACTOR: Centralized logging, key-building, and improved encapsulation.
 ' V2.3:        - BUGFIX: Corrected Enum type references.
 '================================================================================================
 
 ' --- Private Member Variables ---
 Private m_wbHost As Workbook
-Private m_wsLog As Worksheet
+'Private m_wsLog As Worksheet ' This is no longer needed
 Private m_lngWarningCount As Long
 Private m_KeyBuilder As cKeyBuilder
 
@@ -61,9 +59,9 @@ Private Sub Class_Initialize()
     Set m_KeyBuilder = New cKeyBuilder
 End Sub
 
-Public Sub Init(ByVal hostWorkbook As Workbook, ByVal logSheet As Worksheet)
+' The logSheet parameter is removed as it is no longer used.
+Public Sub Init(ByVal hostWorkbook As Workbook)
     Set m_wbHost = hostWorkbook
-    Set m_wsLog = logSheet
     m_lngWarningCount = 0
 End Sub
 
@@ -347,7 +345,6 @@ End Sub
 
 Private Sub Class_Terminate()
     Set m_wbHost = Nothing
-    Set m_wsLog = Nothing
     Set m_dictForecastItemMap = Nothing
     Set m_dictAffiliates = Nothing
     Set m_dictKeyFigures = Nothing
