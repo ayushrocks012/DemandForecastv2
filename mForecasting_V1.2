@@ -4,23 +4,21 @@ Option Explicit
 '================================================================================================
 ' Module:      mForecasting
 ' Purpose:     Main orchestrator for the forecasting process.
-' Version:     46.3
+' Version:     46.4
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
-' V46.3:       - REFACTOR: Converted 'LogPerformance' back to a Sub that takes the timer
-'                ByRef. This is a cleaner pattern and resolves the "Assignment is not used"
-'                warning from Rubberduck.
-' V46.2:       - REFACTOR: Moved 'wsLog' to a smaller scope and converted 'LogPerformance'
-'                to a Function.
+' V46.4:       - BUGFIX: Made the InitializeLogSheet procedure more robust. It now handles
+'                cases where the old log sheet might fail to delete, preventing a runtime
+'                error when renaming the new sheet.
+' V46.3:       - REFACTOR: Converted 'LogPerformance' back to a Sub.
+' V46.2:       - REFACTOR: Moved 'wsLog' to a smaller scope.
 ' V46.1:       - BUGFIX: Corrected the call to cReportGenerator.Init.
-' V46.0:       - REFACTOR: Centralized logging and simplified cCalculationEngine interface.
 '================================================================================================
 
 '--- Private Module-Level Variables ---
 Private wbHost As Workbook
-'Private wsLog As Worksheet ' Moved into InitializeRun
 Private lngWarningCount As Long
 
 '================================================================================================
@@ -52,7 +50,7 @@ End Sub
 
 Private Function InitializeRun() As Boolean
     Dim tCheckpoint As Double: tCheckpoint = Timer
-    Dim wsLog As Worksheet ' Moved from module-level to local scope
+    Dim wsLog As Worksheet
     
     On Error GoTo Init_ErrorHandler
     
@@ -65,13 +63,12 @@ Private Function InitializeRun() As Boolean
     Application.DisplayAlerts = False
     On Error Resume Next
     wbHost.Sheets(SHEET_LOG).Delete
-    On Error GoTo Init_ErrorHandler
+    On Error GoTo 0 ' Reset error handling
     Application.DisplayAlerts = True
     
     Set wsLog = wbHost.Sheets.Add(After:=wbHost.Sheets(wbHost.Sheets.Count))
     InitializeLogSheet wsLog
     
-    ' Initialize the new central logger
     mUtilities.InitializeLogger wsLog
     
     LogPerformance tCheckpoint, "Initialize Environment"
@@ -107,7 +104,6 @@ Private Sub ProcessAllAffiliates(ByVal dataManager As cDataManager)
         lngCounter = lngCounter + 1
         On Error GoTo Affiliate_ErrorHandler
         
-        ' --- STAGE 1: CALCULATE FOR THE ENTIRE AFFILIATE ---
         Application.StatusBar = "Calculating Forecast for " & strAffiliate & " (" & lngCounter & " of " & lngTotal & ")..."
         DoEvents
         
@@ -122,7 +118,6 @@ Private Sub ProcessAllAffiliates(ByVal dataManager As cDataManager)
         
         mUtilities.WriteToLog ltInfo, "ProcessAllAffiliates", "Finished Calculations for: " & strAffiliate
         
-        ' --- STAGE 2: GENERATE A SEPARATE REPORT FOR EACH CUSTOMER ---
         mUtilities.WriteToLog ltInfo, "ProcessAllAffiliates", "Starting Reporting for: " & strAffiliate
         Dim dictCustomers As Object
         Set dictCustomers = GetUniqueCustomersForAffiliate(strAffiliate, dataManager.DemandDataArray)
@@ -258,7 +253,19 @@ Private Sub SetupApplication()
 End Sub
 
 Private Sub InitializeLogSheet(ByVal ws As Worksheet)
+    ' --- SUGGESTED FIX (C) IMPLEMENTED HERE ---
+    On Error Resume Next
     ws.Name = SHEET_LOG
+    If Err.Number <> 0 Then
+        Err.Clear
+        ' Attempt to delete any existing Log and try again
+        Application.DisplayAlerts = False
+        ThisWorkbook.Sheets(SHEET_LOG).Delete
+        Application.DisplayAlerts = True
+        ws.Name = SHEET_LOG
+    End If
+    On Error GoTo 0
+    
     With ws.Range("A1:E1")
         .Value = Array("Timestamp", "Type", "Procedure", "Message", "Context / Error")
         .Font.Bold = True
