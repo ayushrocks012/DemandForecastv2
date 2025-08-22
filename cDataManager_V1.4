@@ -1,30 +1,32 @@
-'---------------------------------------------------------------------------------
-' Module:      cDataManager (Final Version)
-'---------------------------------------------------------------------------------
 '@Folder("Classes")
 Option Explicit
 
 '================================================================================================
 ' Class:       cDataManager
 ' Purpose:     Encapsulates all data loading, validation, and caching logic.
-' Version:     4.3
+' Version:     4.2
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
-' V4.3:        - REFACTOR: All dictionary objects are now created using the central
-'                mUtilities.NewDict() factory function for consistency.
-' V4.2:        - PERFORMANCE: Optimized BuildHistoryCache method.
-' V4.1:        - REFACTOR: Removed unused public property 'DemandDataArray'.
+' V4.2:        - REFACTOR: Made dictionary access explicit (using .Item) in BuildHistoryCache
+'                to resolve a Rubberduck warning and improve code clarity.
+' V4.1:        - REFACTOR: Removed the unused public property 'DemandDataArray'.
+' V4.0:        - PERFORMANCE: Major refactoring to eliminate repeated array scans by
+'                pre-computing structured dictionaries for fast lookups.
 '================================================================================================
 
 ' --- Private Member Variables ---
 Private m_wbHost As Workbook
 Private m_lngWarningCount As Long
 Private m_KeyBuilder As cKeyBuilder
+
+' --- Raw Data Arrays ---
 Private m_arrStatusData As Variant
 Private m_arrHistoryData As Variant
 Private m_arrDemandData As Variant
+
+' --- Processed Data Collections & Caches ---
 Private m_dictForecastItemMap As Object
 Private m_dictKeyFigures As Object
 Private m_dictHistoryCache As Object
@@ -33,9 +35,11 @@ Private m_dictDemandCache As Object
 Private m_dictValidatedChains As Object
 Private m_colHistoryMonths As Collection
 Private m_colForecastMonths As Collection
-Private m_dictAffiliates As Object
-Private m_dictCustomersByAffiliate As Object
-Private m_dictTiersByAffiliateCustomer As Object
+
+' --- NEW: Pre-computed Lookup Dictionaries for Performance ---
+Private m_dictAffiliates As Object ' Top-level dictionary of unique affiliates
+Private m_dictCustomersByAffiliate As Object ' Key: Affiliate, Item: Dictionary of Customers
+Private m_dictTiersByAffiliateCustomer As Object ' Key: Affiliate|Customer, Item: Dictionary of Tiers
 
 ' --- Public Read-Only Properties to Access Data ---
 Public Property Get ForecastItems() As Object: Set ForecastItems = m_dictForecastItemMap: End Property
@@ -48,10 +52,16 @@ Public Property Get HistoryCache() As Object: Set HistoryCache = m_dictHistoryCa
 Public Property Get WarningCount() As Long: WarningCount = m_lngWarningCount: End Property
 Public Property Get HistoryMonths() As Collection: Set HistoryMonths = m_colHistoryMonths: End Property
 Public Property Get ForecastMonths() As Collection: Set ForecastMonths = m_colForecastMonths: End Property
+
+' --- NEW: Public accessors for the new lookup maps ---
 Public Property Get CustomersByAffiliate() As Object: Set CustomersByAffiliate = m_dictCustomersByAffiliate: End Property
 Public Property Get TiersByAffiliateCustomer() As Object: Set TiersByAffiliateCustomer = m_dictTiersByAffiliateCustomer: End Property
 
+
+'================================================================================================
 '--- INITIALIZATION & PUBLIC METHODS ---
+'================================================================================================
+
 Private Sub Class_Initialize()
     Set m_KeyBuilder = New cKeyBuilder
     Set m_dictAffiliates = mUtilities.NewDict()
@@ -66,36 +76,56 @@ End Sub
 
 Public Function LoadAndProcessData() As Boolean
     Dim tCheckpoint As Double: tCheckpoint = Timer
+    
     If Not LoadAndValidateSourceSheets() Then GoTo Main_Exit
+    
     Application.StatusBar = "Building data caches and maps..."
+    
+    ' --- REFACTORED LOADING PROCESS ---
+    ' 1. Build the master map of all unique products
     Set m_dictForecastItemMap = BuildForecastItemMap(m_arrStatusData)
     ValidateSuccessorLinks
+    
+    ' 2. Pre-process the demand data to build fast lookup maps
     BuildLookupMaps
+    
+    ' 3. Build the caches needed for calculation
     BuildHistoryCache
     BuildDataCaches
+    
     LogPerformance tCheckpoint, "Build Caches and Maps"
     LoadAndProcessData = True
     Exit Function
+    
 Main_Exit:
     LoadAndProcessData = False
 End Function
 
+'================================================================================================
 '--- PRIVATE DATA LOADING AND VALIDATION (OPTIMIZED) ---
+'================================================================================================
+
 Private Function LoadAndValidateSourceSheets() As Boolean
     Dim tCheckpoint As Double: tCheckpoint = Timer
     On Error GoTo Load_ErrorHandler
+    
     Application.StatusBar = "Loading and validating source data..."
+    
     If Not SheetExists(ProductStatusSource.sheetName) Then Err.Raise 515, , "Required sheet '" & ProductStatusSource.sheetName & "' not found."
     If Not SheetExists(HistorySource.sheetName) Then Err.Raise 516, , "Required sheet '" & HistorySource.sheetName & "' not found."
     If Not SheetExists(DemandSource.sheetName) Then Err.Raise 517, , "Required sheet '" & DemandSource.sheetName & "' not found."
+    
     m_arrStatusData = LoadDataToArray(m_wbHost.Sheets(ProductStatusSource.sheetName))
     m_arrHistoryData = LoadDataToArray(m_wbHost.Sheets(HistorySource.sheetName))
     m_arrDemandData = LoadDataToArray(m_wbHost.Sheets(DemandSource.sheetName))
+    
     PopulateMonthCollections
+    
     mUtilities.WriteToLog ltInfo, "DataManager.Load", "All source data loaded and validated."
     LogPerformance tCheckpoint, "Load & Validate Data"
     LoadAndValidateSourceSheets = True
     Exit Function
+
 Load_ErrorHandler:
     Dim strErrorMsg As String: strErrorMsg = "Failed to load source sheets. " & vbCrLf & Err.Description
     mUtilities.WriteToLog ltFatal, "DataManager.Load", strErrorMsg, Err.Number
@@ -111,6 +141,7 @@ Private Sub PopulateMonthCollections()
             m_colHistoryMonths.Add CDate(m_arrHistoryData(1, c))
         Next c
     End If
+    
     Set m_colForecastMonths = New Collection
     If Not IsEmpty(m_arrDemandData) Then
         For c = DemandSource.StartOfMonthsCol To UBound(m_arrDemandData, 2)
@@ -122,12 +153,16 @@ End Sub
 Private Function BuildForecastItemMap(ByVal arrStatus As Variant) As Object
     Set BuildForecastItemMap = mUtilities.NewDict()
     Dim rowIndex As Long, obj As cForecastItem, strKey As String
+    
+    ' --- Cache column indices before the loop ---
     Dim colAffiliate As Long: colAffiliate = ProductStatusSource.GetColStrict("Affiliate")
     Dim colISD As Long: colISD = ProductStatusSource.GetColStrict("ISD")
     Dim colStatus As Long: colStatus = ProductStatusSource.GetColStrict("Status")
+    
     For rowIndex = 2 To UBound(arrStatus, 1)
         If GetStatusEnum(arrStatus(rowIndex, colStatus)) <> psNotApplicable Then
             strKey = arrStatus(rowIndex, colAffiliate) & "|" & arrStatus(rowIndex, colISD)
+            
             If Not BuildForecastItemMap.Exists(strKey) Then
                 Set obj = New cForecastItem
                 obj.Init ProductStatusSource, arrStatus, rowIndex
@@ -143,12 +178,15 @@ End Function
 Private Sub ValidateSuccessorLinks()
     Dim tCheckpoint As Double: tCheckpoint = Timer
     Dim itemKey As Variant, currentItem As cForecastItem
+    
     mUtilities.WriteToLog ltInfo, "DataManager.Validation", "Starting validation of successor item links..."
     Set m_dictValidatedChains = mUtilities.NewDict()
+    
     For Each itemKey In m_dictForecastItemMap.Keys
         Set currentItem = m_dictForecastItemMap.item(itemKey)
         If Not m_dictValidatedChains.Exists(itemKey) Then ValidateSingleChain currentItem
     Next itemKey
+    
     LogPerformance tCheckpoint, "Validate Successor Links"
 End Sub
 
@@ -156,6 +194,7 @@ Private Sub ValidateSingleChain(ByVal startItem As cForecastItem)
     Dim pathTracker As Object: Set pathTracker = mUtilities.NewDict()
     Dim currentItem As cForecastItem: Set currentItem = startItem
     Dim strSuccessorKey As String, chainIsValid As Boolean: chainIsValid = True
+    
     Do While True
         If pathTracker.Exists(currentItem.ISD) Then
             m_lngWarningCount = m_lngWarningCount + 1
@@ -163,51 +202,74 @@ Private Sub ValidateSingleChain(ByVal startItem As cForecastItem)
             chainIsValid = False: Exit Do
         End If
         pathTracker.Add currentItem.ISD, 1
+        
         If Len(currentItem.SupersededByProductID) = 0 Then Exit Do
+        
         Dim currentItemKey As String
         currentItemKey = currentItem.Affiliate & "|" & currentItem.ISD
+        
         If m_dictValidatedChains.Exists(currentItemKey) Then
             If Not m_dictValidatedChains.item(currentItemKey) Then chainIsValid = False
             Exit Do
         End If
+        
         strSuccessorKey = currentItem.Affiliate & "|" & currentItem.SupersededByProductID
+        
         If Not m_dictForecastItemMap.Exists(strSuccessorKey) Then
             m_lngWarningCount = m_lngWarningCount + 1
             mUtilities.WriteToLog ltWarning, "DataManager.Validation", "Successor not found (broken link).", , "Item '" & currentItem.DebugSummary() & "' lists successor ISD '" & currentItem.SupersededByProductID & "'."
             chainIsValid = False: Exit Do
         End If
+        
         Set currentItem = m_dictForecastItemMap.item(strSuccessorKey)
     Loop
+    
     Dim pathKey As Variant
     For Each pathKey In pathTracker.Keys
         Dim strItemMapKey As String
         strItemMapKey = startItem.Affiliate & "|" & pathKey
+        
         If Not m_dictValidatedChains.Exists(strItemMapKey) Then
             m_dictValidatedChains.Add strItemMapKey, chainIsValid
         End If
     Next pathKey
 End Sub
 
+'================================================================================================
 '--- PRIVATE CACHING & MAP-BUILDING LOGIC (OPTIMIZED) ---
+'================================================================================================
+
 Private Sub BuildLookupMaps()
-    Dim r As Long, aff As String, cust As String, tier As String, kf As String
+' Purpose: Scans the demand array ONCE to build all necessary hierarchical lookup maps.
+    Dim r As Long
+    Dim aff As String, cust As String, tier As String, kf As String
+    
+    ' --- Cache column indices before the loop ---
     Dim colAff As Long: colAff = DemandSource.GetColStrict("Affiliate")
     Dim colCust As Long: colCust = DemandSource.GetColStrict("Customer")
     Dim colTier As Long: colTier = DemandSource.GetColStrict("Tier")
     Dim colKF As Long: colKF = DemandSource.GetColStrict("KeyFigure")
+    
     Set m_dictKeyFigures = mUtilities.NewDict()
+    
     For r = 2 To UBound(m_arrDemandData, 1)
         aff = m_arrDemandData(r, colAff)
         cust = m_arrDemandData(r, colCust)
         tier = m_arrDemandData(r, colTier)
         kf = m_arrDemandData(r, colKF)
+        
+        ' 1. Populate Affiliates
         If Not m_dictAffiliates.Exists(aff) Then m_dictAffiliates.Add aff, 1
+        
+        ' 2. Populate Customers by Affiliate
         If Not m_dictCustomersByAffiliate.Exists(aff) Then
             m_dictCustomersByAffiliate.Add aff, mUtilities.NewDict()
         End If
         If Not m_dictCustomersByAffiliate.item(aff).Exists(cust) Then
             m_dictCustomersByAffiliate.item(aff).Add cust, 1
         End If
+        
+        ' 3. Populate Tiers by Affiliate and Customer
         Dim acKey As String: acKey = aff & "|" & cust
         If Not m_dictTiersByAffiliateCustomer.Exists(acKey) Then
             m_dictTiersByAffiliateCustomer.Add acKey, mUtilities.NewDict()
@@ -215,28 +277,37 @@ Private Sub BuildLookupMaps()
         If Not m_dictTiersByAffiliateCustomer.item(acKey).Exists(tier) Then
             m_dictTiersByAffiliateCustomer.item(acKey).Add tier, 1
         End If
+        
+        ' 4. Populate Key Figures
         If Not m_dictKeyFigures.Exists(kf) Then m_dictKeyFigures.Add kf, 1
     Next r
 End Sub
 
 Private Sub BuildHistoryCache()
     Set m_dictHistoryCache = mUtilities.NewDict()
+
     Dim dictMonthToCol As Object: Set dictMonthToCol = mUtilities.NewDict(False)
     Dim c As Long
     For c = HistorySource.StartOfMonthsCol To UBound(m_arrHistoryData, 2)
         If IsDate(m_arrHistoryData(1, c)) Then
-            dictMonthToCol(CDbl(CDate(m_arrHistoryData(1, c)))) = c
+            ' --- FIX: Use explicit .Item property ---
+            dictMonthToCol.item(CDbl(CDate(m_arrHistoryData(1, c)))) = c
         End If
     Next c
+
     Dim r As Long, strKey As String, dictMonthlyValues As Object
     Dim colAff As Long: colAff = HistorySource.GetColStrict("Affiliate")
     Dim colCust As Long: colCust = HistorySource.GetColStrict("Customer")
     Dim colKF As Long: colKF = HistorySource.GetColStrict("KeyFigure")
     Dim colItem As Long: colItem = HistorySource.GetColStrict("LocalItemNbr")
+
     For r = 2 To UBound(m_arrHistoryData, 1)
         strKey = m_KeyBuilder.BuildHistoryCacheKey( _
-            m_arrHistoryData(r, colAff), m_arrHistoryData(r, colCust), _
-            m_arrHistoryData(r, colKF), m_arrHistoryData(r, colItem))
+            m_arrHistoryData(r, colAff), _
+            m_arrHistoryData(r, colCust), _
+            m_arrHistoryData(r, colKF), _
+            m_arrHistoryData(r, colItem))
+            
         If Not m_dictHistoryCache.Exists(strKey) Then
             Set dictMonthlyValues = mUtilities.NewDict(False)
             Dim dte As Variant
@@ -245,10 +316,12 @@ Private Sub BuildHistoryCache()
             Next dte
             m_dictHistoryCache.Add strKey, dictMonthlyValues
         End If
+
         Dim dteMonth As Variant, v As Variant, colIdx As Long
         For Each dteMonth In m_colHistoryMonths
             If dictMonthToCol.Exists(CDbl(dteMonth)) Then
-                colIdx = dictMonthToCol(CDbl(dteMonth))
+                ' --- FIX: Use explicit .Item property ---
+                colIdx = dictMonthToCol.item(CDbl(dteMonth))
                 v = m_arrHistoryData(r, colIdx)
                 If IsNumeric(v) Then
                     m_dictHistoryCache.item(strKey).item(dteMonth) = _
@@ -260,53 +333,67 @@ Private Sub BuildHistoryCache()
 End Sub
 
 Private Sub BuildDataCaches()
-    Dim r As Long, dblSum As Double, strSubTierKey As String, strTierKey As String, strDemandKey As String, aff As String, cust As String, tier As String, subTier As String, kf As String
+    Dim r As Long, dblSum As Double
+    Dim strSubTierKey As String, strTierKey As String, strDemandKey As String
+    Dim aff As String, cust As String, tier As String, subTier As String, kf As String
+    
     Dim h_colAff As Long: h_colAff = HistorySource.GetColStrict("Affiliate")
     Dim h_colCust As Long: h_colCust = HistorySource.GetColStrict("Customer")
     Dim h_colTier As Long: h_colTier = HistorySource.GetColStrict("Tier")
     Dim h_colSubTier As Long: h_colSubTier = HistorySource.GetColStrict("SubTier")
     Dim h_colKF As Long: h_colKF = HistorySource.GetColStrict("KeyFigure")
+    
     Dim d_colAff As Long: d_colAff = DemandSource.GetColStrict("Affiliate")
     Dim d_colCust As Long: d_colCust = DemandSource.GetColStrict("Customer")
     Dim d_colTier As Long: d_colTier = DemandSource.GetColStrict("Tier")
     Dim d_colKF As Long: d_colKF = DemandSource.GetColStrict("KeyFigure")
+    
     Set m_dictHistSumCache = mUtilities.NewDict()
+    
     For r = 2 To UBound(m_arrHistoryData, 1)
         aff = m_arrHistoryData(r, h_colAff)
         cust = m_arrHistoryData(r, h_colCust)
         tier = m_arrHistoryData(r, h_colTier)
         subTier = m_arrHistoryData(r, h_colSubTier)
         kf = m_arrHistoryData(r, h_colKF)
+        
         strSubTierKey = m_KeyBuilder.BuildShareLevelKey(aff, cust, tier, subTier, kf)
         strTierKey = m_KeyBuilder.BuildTotalLevelKey(aff, cust, tier, kf)
+                 
         dblSum = 0
         Dim c As Long
         For c = HistorySource.StartOfMonthsCol To UBound(m_arrHistoryData, 2)
             If IsNumeric(m_arrHistoryData(r, c)) Then dblSum = dblSum + CDbl(m_arrHistoryData(r, c))
         Next c
+        
         If m_dictHistSumCache.Exists(strSubTierKey) Then
             m_dictHistSumCache.item(strSubTierKey) = m_dictHistSumCache.item(strSubTierKey) + dblSum
         Else
             m_dictHistSumCache.Add strSubTierKey, dblSum
         End If
+        
         If m_dictHistSumCache.Exists(strTierKey) Then
             m_dictHistSumCache.item(strTierKey) = m_dictHistSumCache.item(strTierKey) + dblSum
         Else
             m_dictHistSumCache.Add strTierKey, dblSum
         End If
     Next r
+
     Set m_dictDemandCache = mUtilities.NewDict()
     For r = 2 To UBound(m_arrDemandData, 1)
         aff = m_arrDemandData(r, d_colAff)
         cust = m_arrDemandData(r, d_colCust)
         tier = m_arrDemandData(r, d_colTier)
         kf = m_arrDemandData(r, d_colKF)
+        
         Dim dteMonth As Variant, col As Long
         col = DemandSource.StartOfMonthsCol
         For Each dteMonth In m_colForecastMonths
             strDemandKey = m_KeyBuilder.BuildDemandKey(aff, cust, tier, kf, dteMonth)
+            
             Dim demandValue As Double
             If IsNumeric(m_arrDemandData(r, col)) Then demandValue = CDbl(m_arrDemandData(r, col))
+            
             If m_dictDemandCache.Exists(strDemandKey) Then
                 m_dictDemandCache.item(strDemandKey) = m_dictDemandCache.item(strDemandKey) + demandValue
             Else
@@ -317,7 +404,10 @@ Private Sub BuildDataCaches()
     Next r
 End Sub
 
+'================================================================================================
 '--- UTILITY & HELPER FUNCTIONS ---
+'================================================================================================
+
 Private Function SheetExists(ByVal sheetName As String) As Boolean
     Dim ws As Worksheet
     On Error Resume Next
