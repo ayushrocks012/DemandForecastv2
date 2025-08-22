@@ -1,0 +1,419 @@
+'@Folder("Classes")
+Option Explicit
+
+'================================================================================================
+' Class:       cReportGenerator
+' Purpose:     Encapsulates all logic for generating the final formatted Excel reports.
+' Version:     5.0
+' Author:      Ayush Goyal
+' Date:        22-Aug-2025
+'
+' Change Log:
+' V5.0:        - PERFORMANCE: Removed the slow GetUniqueTiersForCustomer function. The
+'                logic now uses the new, pre-computed TiersByAffiliateCustomer map from
+'                cDataManager for vastly improved performance.
+'              - PERFORMANCE: Cached column indices in GetItemsForTierAndCustomer to
+'                avoid lookups inside the loop.
+' V4.1:        - REFACTOR: Removed unused log sheet dependency.
+' V4.0:        - REFACTOR: Centralized logging and improved encapsulation.
+'================================================================================================
+
+' --- Private Member Variables (State for a single report job) ---
+Private m_DataManager As cDataManager
+Private m_strAffiliate As String
+Private m_strCustomer As String
+Private m_strBasePath As String
+
+'================================================================================================
+'--- INITIALIZATION & PUBLIC METHODS ---
+'================================================================================================
+
+Public Sub Init(ByVal dataManager As cDataManager, ByVal basePath As String)
+    Set m_DataManager = dataManager
+    m_strBasePath = basePath
+End Sub
+
+Public Sub GenerateCustomerReport(ByVal strAffiliate As String, ByVal strCustomer As String)
+    m_strAffiliate = strAffiliate
+    m_strCustomer = strCustomer
+    
+    mUtilities.WriteToLog ltInfo, "GenerateCustomerReport", "Starting report for " & strAffiliate & " - " & strCustomer
+    Dim tStart As Double: tStart = Timer
+    
+    Dim wbReport As Workbook, ws As Worksheet
+    Dim varKeyFigure As Variant, varTier As Variant
+    Dim dictTiers As Object, dictSheetToKeyFigureMap As Object
+    Set dictSheetToKeyFigureMap = CreateObject("Scripting.Dictionary")
+    
+    Set wbReport = Workbooks.Add
+    
+    For Each varKeyFigure In m_DataManager.KeyFigures.Keys
+        Set ws = wbReport.Sheets.Add(Before:=wbReport.Sheets(1))
+        Dim sheetName As String: sheetName = SanitizeSheetName("Summary - " & CStr(varKeyFigure))
+        ws.Name = sheetName
+        dictSheetToKeyFigureMap.Add sheetName, CStr(varKeyFigure)
+    Next varKeyFigure
+    
+    Application.DisplayAlerts = False
+    On Error Resume Next
+    wbReport.Sheets("Sheet1").Delete
+    On Error GoTo 0
+    Application.DisplayAlerts = True
+
+    ' --- PERFORMANCE: Use the pre-computed map instead of scanning the array ---
+    Dim acKey As String: acKey = strAffiliate & "|" & strCustomer
+    Set dictTiers = m_DataManager.TiersByAffiliateCustomer.item(acKey)
+    
+    For Each varTier In dictTiers.Keys
+        Set ws = wbReport.Sheets.Add(After:=wbReport.Sheets(wbReport.Sheets.Count))
+        ws.Name = SanitizeSheetName(CStr(varTier))
+        PopulateTierSheet ws, CStr(varTier), strCustomer
+    Next varTier
+    
+    PopulateSummarySheets wbReport, dictSheetToKeyFigureMap, strCustomer
+    
+    FormatAllSheets wbReport, dictSheetToKeyFigureMap
+    
+    If Not DEBUG_MODE Then
+        Dim strFilePath As String: strFilePath = GetOutputFilePath()
+        
+        On Error Resume Next
+        wbReport.SaveAs strFilePath
+        If Err.Number <> 0 Then
+            mUtilities.WriteToLog ltError, "ReportGenerator.Save", "Failed to save report for " & m_strAffiliate & " - " & m_strCustomer, Err.Number, "Path: " & strFilePath
+        Else
+            mUtilities.WriteToLog ltInfo, "ReportGenerator.Save", "Report saved to " & strFilePath
+        End If
+        On Error GoTo 0
+        
+        wbReport.Close SaveChanges:=False
+    End If
+    
+    mUtilities.WriteToLog ltProfile, "GenerateCustomerReport", "Finished report for " & strAffiliate & " - " & strCustomer & " in " & format$(Timer - tStart, "#,##0.00") & "s"
+End Sub
+
+'================================================================================================
+'--- PRIVATE REPORT POPULATION & FORMATTING (OPTIMIZED) ---
+'================================================================================================
+
+Private Sub PopulateTierSheet(ByVal ws As Worksheet, ByVal strTier As String, ByVal strCustomer As String)
+    Dim arrOutput() As Variant, arrHeader() As Variant, colProducts As Collection
+    Dim colIndex As Long, staticColCount As Long
+    Dim numHistMonths As Long, numFcstMonths As Long
+    Dim outputRowIndex As Long, subtotalStartRow As Long
+    Dim forecastItem As cForecastItem, varKeyFigure As Variant, dteMonth As Variant
+    
+    Set colProducts = GetItemsForTierAndCustomer(strTier, strCustomer)
+    If colProducts.Count = 0 Then Exit Sub
+    
+    staticColCount = GetTierReportCols().Count
+    numHistMonths = m_DataManager.HistoryMonths.Count
+    numFcstMonths = m_DataManager.ForecastMonths.Count
+    
+    ReDim arrHeader(1 To staticColCount + numHistMonths + numFcstMonths)
+    For colIndex = 1 To staticColCount
+        arrHeader(colIndex) = GetTierReportCols()(colIndex).HeaderText
+    Next colIndex
+    
+    colIndex = staticColCount + 1
+    For Each dteMonth In m_DataManager.HistoryMonths
+        arrHeader(colIndex) = format$(dteMonth, "mmm-yy")
+        colIndex = colIndex + 1
+    Next dteMonth
+    For Each dteMonth In m_DataManager.ForecastMonths
+        arrHeader(colIndex) = format$(dteMonth, "mmm-yy")
+        colIndex = colIndex + 1
+    Next dteMonth
+    
+    ReDim arrOutput(1 To (colProducts.Count * m_DataManager.KeyFigures.Count) + m_DataManager.KeyFigures.Count, 1 To UBound(arrHeader))
+    outputRowIndex = 1
+    
+    For Each varKeyFigure In m_DataManager.KeyFigures.Keys
+        subtotalStartRow = outputRowIndex
+        For Each forecastItem In colProducts
+            For colIndex = 1 To staticColCount
+                Select Case GetTierReportCols()(colIndex).SourceProperty
+                    Case "KeyFigure": arrOutput(outputRowIndex, colIndex) = CStr(varKeyFigure)
+                    Case "Affiliate": arrOutput(outputRowIndex, colIndex) = forecastItem.Affiliate
+                    Case "Customer": arrOutput(outputRowIndex, colIndex) = strCustomer
+                    Case "ForecastTier": arrOutput(outputRowIndex, colIndex) = forecastItem.ForecastTier
+                    Case "ForecastSubTier": arrOutput(outputRowIndex, colIndex) = forecastItem.ForecastSubTier
+                    Case "LocalItemNbr": arrOutput(outputRowIndex, colIndex) = forecastItem.LocalItemNbr
+                    Case "Description": arrOutput(outputRowIndex, colIndex) = forecastItem.Description
+                    Case "ISD": arrOutput(outputRowIndex, colIndex) = forecastItem.ISD
+                    Case "StatusString": arrOutput(outputRowIndex, colIndex) = forecastItem.StatusString
+                    Case "PhaseOutDate": arrOutput(outputRowIndex, colIndex) = forecastItem.PhaseOutDate
+                End Select
+            Next colIndex
+            
+            Dim strHistKey As String
+            strHistKey = forecastItem.Affiliate & "|" & strCustomer & "|" & CStr(varKeyFigure) & "|" & forecastItem.LocalItemNbr
+            
+            colIndex = staticColCount + 1
+            For Each dteMonth In m_DataManager.HistoryMonths
+                If m_DataManager.HistoryCache.Exists(strHistKey) Then
+                    If m_DataManager.HistoryCache.item(strHistKey).Exists(dteMonth) Then
+                        arrOutput(outputRowIndex, colIndex) = m_DataManager.HistoryCache.item(strHistKey).item(dteMonth)
+                    End If
+                End If
+                colIndex = colIndex + 1
+            Next dteMonth
+            
+            For Each dteMonth In m_DataManager.ForecastMonths
+                Dim fcstKey As String: fcstKey = strCustomer & "|" & CStr(varKeyFigure) & "|" & dteMonth
+                If forecastItem.ForecastValues.Exists(fcstKey) Then
+                    Dim baseValue As Double: baseValue = forecastItem.ForecastValues.item(fcstKey)
+                    Dim finalValue As Double: finalValue = baseValue * forecastItem.GetForecastMultiplier(dteMonth)
+                    arrOutput(outputRowIndex, colIndex) = finalValue
+                End If
+                colIndex = colIndex + 1
+            Next dteMonth
+            outputRowIndex = outputRowIndex + 1
+        Next forecastItem
+        
+        arrOutput(outputRowIndex, 1) = CStr(varKeyFigure): arrOutput(outputRowIndex, 2) = "TOTAL": arrOutput(outputRowIndex, 3) = strCustomer: arrOutput(outputRowIndex, 4) = strTier
+        For colIndex = staticColCount + 1 To UBound(arrOutput, 2)
+            Dim monthlyTotal As Double: monthlyTotal = 0
+            Dim productRow As Long
+            For productRow = subtotalStartRow To outputRowIndex - 1
+                If IsNumeric(arrOutput(productRow, colIndex)) Then monthlyTotal = monthlyTotal + CDbl(arrOutput(productRow, colIndex))
+            Next productRow
+            arrOutput(outputRowIndex, colIndex) = monthlyTotal
+        Next colIndex
+        outputRowIndex = outputRowIndex + 1
+    Next varKeyFigure
+    
+    ws.Range("A1").Resize(1, UBound(arrHeader)).Value = arrHeader
+    ws.Range("A2").Resize(outputRowIndex - 1, UBound(arrHeader)).Value = arrOutput
+End Sub
+
+Private Sub PopulateSummarySheets(ByVal wbReport As Workbook, ByVal dictMap As Object, ByVal strCustomer As String)
+    Dim ws As Worksheet, forecastItem As cForecastItem, arrOutput() As Variant, arrHeader() As Variant
+    Dim colIndex As Long, staticColCount As Long
+    Dim numFcstMonths As Long, outputRowIndex As Long
+    Dim strFullKeyFigure As String, varKey As Variant, dteMonth As Variant
+    
+    staticColCount = GetSummaryReportCols().Count
+    numFcstMonths = m_DataManager.ForecastMonths.Count
+    
+    ReDim arrHeader(1 To staticColCount + numFcstMonths)
+    For colIndex = 1 To staticColCount
+        arrHeader(colIndex) = GetSummaryReportCols()(colIndex).HeaderText
+    Next colIndex
+    
+    colIndex = staticColCount + 1
+    For Each dteMonth In m_DataManager.ForecastMonths
+        arrHeader(colIndex) = format$(dteMonth, "mmm-yy")
+        colIndex = colIndex + 1
+    Next dteMonth
+    
+    Dim affiliateItems As Collection
+    Set affiliateItems = New Collection
+    Dim tempItem As cForecastItem
+    For Each varKey In m_DataManager.ForecastItems.Keys
+        Set tempItem = m_DataManager.ForecastItems.item(varKey)
+        If tempItem.Affiliate = m_strAffiliate Then
+            affiliateItems.Add tempItem
+        End If
+    Next varKey
+    
+    For Each ws In wbReport.Worksheets
+        If dictMap.Exists(ws.Name) Then
+            strFullKeyFigure = dictMap.item(ws.Name)
+            ReDim arrOutput(1 To affiliateItems.Count, 1 To UBound(arrHeader))
+            outputRowIndex = 1
+            
+            For Each forecastItem In affiliateItems
+                For colIndex = 1 To staticColCount
+                    Select Case GetSummaryReportCols()(colIndex).SourceProperty
+                        Case "Affiliate": arrOutput(outputRowIndex, colIndex) = forecastItem.Affiliate
+                        Case "Customer": arrOutput(outputRowIndex, colIndex) = strCustomer
+                        Case "ForecastTier": arrOutput(outputRowIndex, colIndex) = forecastItem.ForecastTier
+                        Case "ForecastSubTier": arrOutput(outputRowIndex, colIndex) = forecastItem.ForecastSubTier
+                        Case "LocalItemNbr": arrOutput(outputRowIndex, colIndex) = forecastItem.LocalItemNbr
+                        Case "Description": arrOutput(outputRowIndex, colIndex) = forecastItem.Description
+                        Case "ISD": arrOutput(outputRowIndex, colIndex) = forecastItem.ISD
+                        Case "StatusString": arrOutput(outputRowIndex, colIndex) = forecastItem.StatusString
+                        Case "PhaseOutDate": arrOutput(outputRowIndex, colIndex) = forecastItem.PhaseOutDate
+                    End Select
+                Next colIndex
+                
+                colIndex = staticColCount + 1
+                For Each dteMonth In m_DataManager.ForecastMonths
+                    Dim forecastKey As String: forecastKey = strCustomer & "|" & strFullKeyFigure & "|" & dteMonth
+                    If forecastItem.ForecastValues.Exists(forecastKey) Then
+                        Dim baseValue As Double: baseValue = forecastItem.ForecastValues.item(forecastKey)
+                        Dim finalValue As Double: finalValue = baseValue * forecastItem.GetForecastMultiplier(dteMonth)
+                        arrOutput(outputRowIndex, colIndex) = finalValue
+                    End If
+                    colIndex = colIndex + 1
+                Next dteMonth
+                outputRowIndex = outputRowIndex + 1
+            Next forecastItem
+            
+            ws.Range("A1").Resize(1, UBound(arrHeader)).Value = arrHeader
+            If outputRowIndex > 1 Then ws.Range("A2").Resize(outputRowIndex - 1, UBound(arrHeader)).Value = arrOutput
+        End If
+    Next ws
+End Sub
+
+Private Sub FormatAllSheets(ByVal wbReport As Workbook, ByVal dictSheetToKeyFigureMap As Object)
+    Dim ws As Worksheet
+    For Each ws In wbReport.Worksheets
+        If dictSheetToKeyFigureMap.Exists(ws.Name) Then
+            FormatSummarySheet ws
+        Else
+            FormatTierSheet ws
+        End If
+    Next ws
+End Sub
+
+Private Sub FormatTierSheet(ByVal ws As Worksheet)
+    Dim lastRow As Long, lastCol As Long, staticColCount As Long, histColStart As Long, fcstColStart As Long
+    
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    If lastRow <= 1 Then Exit Sub
+    
+    staticColCount = GetTierReportCols().Count
+    histColStart = staticColCount + 1
+    fcstColStart = histColStart + m_DataManager.HistoryMonths.Count
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    
+    With Union(ws.Range("A1").Resize(1, staticColCount), ws.Range(ws.Cells(1, fcstColStart), ws.Cells(1, lastCol)))
+        .Font.Bold = True: .Font.Color = vbWhite: .Interior.Color = RGB(0, 32, 96): .VerticalAlignment = xlCenter
+    End With
+    With ws.Range(ws.Cells(1, histColStart), ws.Cells(1, fcstColStart - 1))
+        .Font.Bold = True: .Font.Color = vbBlack: .Interior.Color = RGB(217, 217, 217): .VerticalAlignment = xlCenter
+    End With
+    
+    Dim col As Long
+    For col = 1 To staticColCount
+        ws.Columns(col).ColumnWidth = GetTierReportCols()(col).ColumnWidth
+        If Len(GetTierReportCols()(col).NumberFormat) > 0 Then ws.Columns(col).NumberFormat = GetTierReportCols()(col).NumberFormat
+    Next col
+    
+    ws.Range(ws.Cells(2, histColStart), ws.Cells(lastRow, fcstColStart - 1)).Interior.Color = RGB(242, 242, 242)
+    ws.Range(ws.Cells(2, histColStart), ws.Cells(lastRow, lastCol)).NumberFormat = "#,##0"
+    
+    Dim rowIndex As Long
+    For rowIndex = 2 To lastRow
+        If ws.Cells(rowIndex, 2).Value = "TOTAL" Then
+            With ws.Range(ws.Cells(rowIndex, 1), ws.Cells(rowIndex, lastCol))
+                .Font.Bold = True: .Interior.Color = RGB(220, 230, 241)
+            End With
+        End If
+    Next rowIndex
+    
+    With ws.Range("A1").Resize(lastRow, lastCol).Borders
+        .LineStyle = xlContinuous: .Weight = xlThin
+    End With
+    
+    ws.Activate: ws.Rows(2).Select: ActiveWindow.FreezePanes = True: ws.Cells(1, 1).Select
+End Sub
+
+Private Sub FormatSummarySheet(ByVal ws As Worksheet)
+    Dim lastRow As Long, lastCol As Long, staticColCount As Long
+    
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    If lastRow <= 1 Then Exit Sub
+    
+    staticColCount = GetSummaryReportCols().Count
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    
+    With ws.Range("A1").Resize(1, lastCol)
+        .Font.Bold = True: .Font.Color = vbWhite: .Interior.Color = RGB(0, 32, 96): .VerticalAlignment = xlCenter
+    End With
+    
+    Dim col As Long
+    For col = 1 To staticColCount
+        ws.Columns(col).ColumnWidth = GetSummaryReportCols()(col).ColumnWidth
+        If Len(GetSummaryReportCols()(col).NumberFormat) > 0 Then ws.Columns(col).NumberFormat = GetSummaryReportCols()(col).NumberFormat
+    Next col
+    
+    ws.Range(ws.Cells(2, staticColCount + 1), ws.Cells(lastRow, lastCol)).NumberFormat = "#,##0"
+    
+    With ws.Range("A1").Resize(lastRow, lastCol).Borders
+        .LineStyle = xlContinuous: .Weight = xlThin
+    End With
+    
+    ws.Activate: ws.Rows(2).Select: ActiveWindow.FreezePanes = True: ws.Cells(1, 1).Select
+End Sub
+
+'================================================================================================
+'--- PRIVATE HELPERS & UTILITIES ---
+'================================================================================================
+
+Private Function GetItemsForTierAndCustomer(strTier As String, strCustomer As String) As Collection
+    Set GetItemsForTierAndCustomer = New Collection
+    Dim dictItemsForReport As Object: Set dictItemsForReport = CreateObject("Scripting.Dictionary")
+    Dim rowIndex As Long, arrHistory As Variant: arrHistory = m_DataManager.HistoryDataArray
+    Dim strLocalItemNbr As String, currentItem As cForecastItem
+    Dim mapLocalToMasterKey As Object: Set mapLocalToMasterKey = CreateObject("Scripting.Dictionary")
+    Dim varKey As Variant, obj As cForecastItem
+    
+    ' --- Cache column indices before the loop ---
+    Dim colAff As Long: colAff = HistorySource.GetCol("Affiliate")
+    Dim colTier As Long: colTier = HistorySource.GetCol("Tier")
+    Dim colCust As Long: colCust = HistorySource.GetCol("Customer")
+    Dim colItem As Long: colItem = HistorySource.GetCol("LocalItemNbr")
+    
+    For Each varKey In m_DataManager.ForecastItems.Keys
+        Set obj = m_DataManager.ForecastItems.item(varKey)
+        If obj.Affiliate = m_strAffiliate Then
+            If Not mapLocalToMasterKey.Exists(obj.LocalItemNbr) Then
+                mapLocalToMasterKey.Add obj.LocalItemNbr, varKey
+            End If
+        End If
+    Next varKey
+    
+    For rowIndex = 2 To UBound(arrHistory, 1)
+        If arrHistory(rowIndex, colAff) = m_strAffiliate And _
+           arrHistory(rowIndex, colTier) = strTier And _
+           arrHistory(rowIndex, colCust) = strCustomer Then
+            strLocalItemNbr = arrHistory(rowIndex, colItem)
+            If mapLocalToMasterKey.Exists(strLocalItemNbr) Then
+                Dim masterKey As String: masterKey = mapLocalToMasterKey.item(strLocalItemNbr)
+                If Not dictItemsForReport.Exists(masterKey) Then
+                    Set currentItem = m_DataManager.ForecastItems.item(masterKey)
+                    dictItemsForReport.Add masterKey, currentItem
+                    Do While currentItem.IsPhasingOut And Len(currentItem.SupersededByProductID) > 0
+                        Dim successorKey As String: successorKey = m_strAffiliate & "|" & currentItem.SupersededByProductID
+                        If m_DataManager.ForecastItems.Exists(successorKey) Then
+                            If Not dictItemsForReport.Exists(successorKey) Then
+                                Set currentItem = m_DataManager.ForecastItems.item(successorKey)
+                                dictItemsForReport.Add successorKey, currentItem
+                            Else
+                                Exit Do
+                            End If
+                        Else
+                            Exit Do
+                        End If
+                    Loop
+                End If
+            End If
+        End If
+    Next rowIndex
+    
+    If dictItemsForReport.Count > 0 Then
+        Dim key As Variant
+        For Each key In dictItemsForReport.Keys
+            GetItemsForTierAndCustomer.Add dictItemsForReport.item(key)
+        Next key
+    End If
+End Function
+
+Private Function SanitizeSheetName(ByVal strName As String) As String
+    Dim sanitizedString As String: sanitizedString = strName
+    sanitizedString = Replace(sanitizedString, "/", "-"): sanitizedString = Replace(sanitizedString, "\", "-")
+    sanitizedString = Replace(sanitizedString, "?", ""): sanitizedString = Replace(sanitizedString, "*", "")
+    sanitizedString = Replace(sanitizedString, "[", ""): sanitizedString = Replace(sanitizedString, "]", "")
+    SanitizeSheetName = Left$(sanitizedString, 31)
+End Function
+
+Private Function GetOutputFilePath() As String
+    GetOutputFilePath = m_strBasePath & "\Demand Forecast - " & m_strAffiliate & " - " & m_strCustomer & " - " & format$(Now, "ddmmyyyy_hhmmss") & ".xlsx"
+End Function
+
+Private Sub Class_Terminate()
+    Set m_DataManager = Nothing
+End Sub
