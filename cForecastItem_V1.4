@@ -1,5 +1,5 @@
 '---------------------------------------------------------------------------------
-' Module:      cForecastItem (Final Version)
+' Module:      cForecastItem (Final Version - CORRECTED)
 '---------------------------------------------------------------------------------
 '@Folder("Classes")
 Option Explicit
@@ -7,15 +7,16 @@ Option Explicit
 '================================================================================================
 ' Class:       cForecastItem
 ' Purpose:     Represents a single, generic item to be forecasted.
-' Version:     3.5
+' Version:     3.6
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
+' V3.6:        - BUGFIX: Corrected an invalid single-line If..ElseIf statement in AddProp
+'                to be a proper multi-line block, resolving a compile error.
 ' V3.5:        - REFACTOR: All dictionary objects are now created using the central
 '                mUtilities.NewDict() factory function for consistency.
 ' V3.4:        - PERFORMANCE: The Init method now caches all column indices.
-' V3.3:        - BUGFIX: Corrected Enum type reference.
 '================================================================================================
 
 Private m_Properties As Object
@@ -95,12 +96,19 @@ End Function
 
 Public Sub AddProp(ByVal key As String, ByVal Value As Variant)
     Dim cleanValue As Variant
-    If IsObject(Value) Then Set cleanValue = Value
-    ElseIf IsDate(Value) Then cleanValue = CDate(Value)
-    Else cleanValue = Trim$(CStr(Value))
+    ' --- THIS BLOCK IS NOW CORRECTLY FORMATTED ---
+    If IsObject(Value) Then
+        Set cleanValue = Value
+    ElseIf IsDate(Value) Then
+        cleanValue = CDate(Value)
+    Else
+        cleanValue = Trim$(CStr(Value))
     End If
-    If m_Properties.Exists(key) Then m_Properties.item(key) = cleanValue
-    Else m_Properties.Add key, cleanValue
+    
+    If m_Properties.Exists(key) Then
+        m_Properties.item(key) = cleanValue
+    Else
+        m_Properties.Add key, cleanValue
     End If
 End Sub
 
