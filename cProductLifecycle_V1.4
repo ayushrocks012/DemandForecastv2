@@ -1,0 +1,87 @@
+'@Folder("Classes")
+Option Explicit
+
+'================================================================================================
+' Class:       cProductLifecycle
+' Purpose:     Encapsulates all business logic related to product lifecycle events
+'              that involve interactions between multiple items, such as transferring
+'              forecasts from a phased-out product to its successor.
+' Version:     2.2
+' Author:      Ayush Goyal
+' Date:        22-Aug-2025
+'
+' Change Log:
+' V2.2:        - REFACTOR: Corrected a character encoding issue in a comment and clarified
+'                the explanation of the "gross-up" logic for better maintainability.
+' V2.1:        - BUGFIX: Corrected a logic error with the transfer value calculation.
+'================================================================================================
+
+' --- Public Methods ---
+Public Sub ProcessSuccessorTransfers(ByVal dictItems As Object)
+    If dictItems Is Nothing Then Exit Sub
+    If dictItems.Count = 0 Then Exit Sub
+    
+    Dim itemKey As Variant
+    Dim outgoingItem As cForecastItem
+    
+    For Each itemKey In dictItems.Keys
+        Set outgoingItem = dictItems.item(itemKey)
+        
+        If outgoingItem.IsPhasingOut And Len(outgoingItem.SupersededByProductID) > 0 Then
+            LinkAndTransferSingleItem outgoingItem, dictItems
+        End If
+    Next itemKey
+End Sub
+
+' --- Private Helper Methods ---
+Private Sub LinkAndTransferSingleItem(ByVal outgoingItem As cForecastItem, ByVal dictItems As Object)
+    Dim successorMapKey As String
+    successorMapKey = outgoingItem.Affiliate & "|" & outgoingItem.SupersededByProductID
+    
+    If dictItems.Exists(successorMapKey) Then
+        Dim successorItem As cForecastItem
+        Set successorItem = dictItems.item(successorMapKey)
+        
+        successorItem.MarkAsPhasingIn outgoingItem.PhaseOutDate, (1 - outgoingItem.PhaseOutPercent)
+        
+        Dim forecastKey As Variant
+        Dim forecastMonth As Date
+        
+        For Each forecastKey In outgoingItem.ForecastValues.Keys
+            forecastMonth = CDate(Split(forecastKey, "|")(2))
+            
+            If FirstDayOfMonth(forecastMonth) = FirstDayOfMonth(outgoingItem.PhaseOutDate) Then
+                Dim originalValue As Double: originalValue = outgoingItem.ForecastValues.item(forecastKey)
+                Dim multiplier As Double: multiplier = outgoingItem.GetForecastMultiplier(forecastMonth)
+                Dim transferValue As Double
+                
+                If originalValue > 0 Then
+                    transferValue = originalValue * (1 - multiplier)
+                End If
+                
+                ' --- SUGGESTED FIX (3.1) IMPLEMENTED HERE ---
+                ' "Gross-up" the transfer so that after the successor's multiplier is applied,
+                ' the successor receives exactly the (1 - PhaseOutPercent) slice of the forecast.
+                Dim phaseInPercent As Double
+                phaseInPercent = 1 - outgoingItem.PhaseOutPercent
+                
+                Dim transferBase As Double
+                If phaseInPercent > 0 Then
+                    transferBase = transferValue / phaseInPercent
+                Else
+                    transferBase = 0
+                End If
+                
+                If successorItem.ForecastValues.Exists(forecastKey) Then
+                    successorItem.ForecastValues.item(forecastKey) = successorItem.ForecastValues.item(forecastKey) + transferBase
+                Else
+                    successorItem.ForecastValues.Add forecastKey, transferBase
+                End If
+            End If
+        Next forecastKey
+    End If
+End Sub
+
+Private Function FirstDayOfMonth(ByVal d As Date) As Date
+    FirstDayOfMonth = DateSerial(Year(d), Month(d), 1)
+End Function
