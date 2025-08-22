@@ -1,0 +1,86 @@
+'@Folder("Classes")
+Option Explicit
+
+'================================================================================================
+' Class:       cCalculationEngine
+' Purpose:     Encapsulates the core forecast calculation logic.
+' Version:     3.0
+' Author:      Ayush Goyal
+' Date:        22-Aug-2025
+'
+' Change Log:
+' V3.0:        - REFACTOR: Simplified the public interface. The Init method now accepts the
+'                entire cDataManager object, making the engine more self-contained.
+'              - REFACTOR: The Execute method signature was simplified to 3 parameters. It
+'                now retrieves caches directly from its internal cDataManager instance.
+'              - REFACTOR: All key-building logic was removed and replaced with calls to the
+'                new cKeyBuilder class for consistency and robustness.
+' V2.1:        - REFACTOR: Removed unused dimension properties.
+'================================================================================================
+
+' --- Private Member Variables ---
+Private m_DataManager As cDataManager
+Private m_KeyBuilder As cKeyBuilder
+
+'================================================================================================
+'--- PUBLIC INITIALIZATION & EXECUTION ---
+'================================================================================================
+
+Private Sub Class_Initialize()
+    Set m_KeyBuilder = New cKeyBuilder
+End Sub
+
+Public Sub Init(ByVal dataManager As cDataManager)
+    Set m_DataManager = dataManager
+End Sub
+
+Public Sub Execute(ByVal item As cForecastItem, ByVal strCustomer As String, ByVal strKeyFigure As String)
+    If m_DataManager Is Nothing Then Exit Sub ' Safety check
+
+    Dim histSubTierSum As Double, histTierSum As Double
+    Dim histCache As Object: Set histCache = m_DataManager.HistorySumCache
+    Dim demandCache As Object: Set demandCache = m_DataManager.DemandCache
+    
+    histTierSum = GetValueFromCache(histCache, m_KeyBuilder.BuildTotalLevelKey(item.Affiliate, strCustomer, item.ForecastTier, strKeyFigure))
+    
+    If histTierSum > 0 Then
+        histSubTierSum = GetValueFromCache(histCache, m_KeyBuilder.BuildShareLevelKey(item.Affiliate, strCustomer, item.ForecastTier, item.ForecastSubTier, strKeyFigure))
+        
+        Dim forecastMonth As Variant
+        For Each forecastMonth In m_DataManager.ForecastMonths
+            Dim demandTierValue As Double
+            demandTierValue = GetValueFromCache(demandCache, m_KeyBuilder.BuildDemandKey(item.Affiliate, strCustomer, item.ForecastTier, strKeyFigure, forecastMonth))
+            
+            Dim productShareOfTier As Double
+            If histTierSum <> 0 Then productShareOfTier = histSubTierSum / histTierSum
+
+            Dim baseForecast As Double
+            baseForecast = productShareOfTier * demandTierValue
+            
+            item.ForecastValues.Add strCustomer & "|" & strKeyFigure & "|" & forecastMonth, baseForecast
+        Next forecastMonth
+    Else
+        ' --- If tier has no history for this customer, all forecasts are zero ---
+        Dim fMonth As Variant
+        For Each fMonth In m_DataManager.ForecastMonths
+            item.ForecastValues.Add strCustomer & "|" & strKeyFigure & "|" & fMonth, 0
+        Next fMonth
+    End If
+End Sub
+
+'================================================================================================
+'--- PRIVATE HELPER METHODS ---
+'================================================================================================
+
+Private Function GetValueFromCache(ByVal cache As Object, ByVal cacheKey As String) As Double
+    If cache.Exists(cacheKey) Then
+        GetValueFromCache = cache.item(cacheKey)
+    Else
+        GetValueFromCache = 0
+    End If
+End Function
+
+Private Sub Class_Terminate()
+    Set m_DataManager = Nothing
+    Set m_KeyBuilder = Nothing
+End Sub
