@@ -1,0 +1,69 @@
+'@Folder("Classes")
+Option Explicit
+
+'================================================================================================
+' Class:       cDataSource
+' Purpose:     Defines the structure of a source data sheet by mapping human-readable
+'              field names (e.g., "Affiliate") to their physical column index.
+' Version:     1.1
+' Author:      Ayush Goyal
+' Date:        22-Aug-2025
+'
+' Change Log:
+' V1.1:        - FEATURE: Added a 'GetColStrict' method that raises a clear error if a
+'                required column mapping is not found. This helps the application
+'                "fail fast" and improves traceability of configuration errors.
+' V1.0:        - Initial creation.
+'================================================================================================
+
+' --- Private Member Variables ---
+Private m_SheetName As String
+Private m_FieldMappings As Object
+Private m_StartOfMonthsCol As Long
+
+' --- Public Properties ---
+Public Property Get sheetName() As String: sheetName = m_SheetName: End Property
+Public Property Let sheetName(ByVal Value As String): m_SheetName = Value: End Property
+Public Property Get StartOfMonthsCol() As Long: StartOfMonthsCol = m_StartOfMonthsCol: End Property
+Public Property Let StartOfMonthsCol(ByVal Value As Long): m_StartOfMonthsCol = Value: End Property
+
+' --- Constructor ---
+Private Sub Class_Initialize()
+    Set m_FieldMappings = CreateObject("Scripting.Dictionary")
+    m_FieldMappings.CompareMode = vbTextCompare
+End Sub
+
+' --- Public Methods ---
+Public Sub MapField(ByVal FieldName As String, ByVal ColumnIndex As Long)
+    If Not m_FieldMappings.Exists(FieldName) Then
+        m_FieldMappings.Add FieldName, ColumnIndex
+    Else
+        m_FieldMappings.item(FieldName) = ColumnIndex
+    End If
+End Sub
+
+Public Function GetCol(ByVal FieldName As String) As Long
+    If m_FieldMappings.Exists(FieldName) Then
+        GetCol = m_FieldMappings.item(FieldName)
+    Else
+        Debug.Print "Warning: Field '" & FieldName & "' not found in data source config for sheet '" & m_SheetName & "'."
+        GetCol = 0
+    End If
+End Function
+
+' --- SUGGESTED FIX (1.3) IMPLEMENTED HERE ---
+Public Function GetColStrict(ByVal FieldName As String) As Long
+' Purpose: Gets a column index but raises a descriptive error if the mapping is missing.
+    Dim n As Long
+    n = GetCol(FieldName)
+    If n = 0 Then
+        Err.Raise 10001, "cDataSource.GetColStrict", _
+            "Required field '" & FieldName & "' not found in sheet '" & m_SheetName & "'."
+    End If
+    GetColStrict = n
+End Function
+
+' --- Destructor ---
+Private Sub Class_Terminate()
+    Set m_FieldMappings = Nothing
+End Sub
