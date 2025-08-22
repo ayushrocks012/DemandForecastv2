@@ -1,22 +1,19 @@
-'---------------------------------------------------------------------------------
-' Module:      cForecastItem (Final Version - CORRECTED)
-'---------------------------------------------------------------------------------
 '@Folder("Classes")
 Option Explicit
 
 '================================================================================================
 ' Class:       cForecastItem
 ' Purpose:     Represents a single, generic item to be forecasted.
-' Version:     3.6
+' Version:     3.7
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
-' V3.6:        - BUGFIX: Corrected an invalid single-line If..ElseIf statement in AddProp
+' V3.7:        - BUGFIX: Corrected an invalid single-line If..Else statement in GetProp
 '                to be a proper multi-line block, resolving a compile error.
+' V3.6:        - BUGFIX: Corrected an invalid single-line If..ElseIf statement in AddProp.
 ' V3.5:        - REFACTOR: All dictionary objects are now created using the central
 '                mUtilities.NewDict() factory function for consistency.
-' V3.4:        - PERFORMANCE: The Init method now caches all column indices.
 '================================================================================================
 
 Private m_Properties As Object
@@ -96,7 +93,6 @@ End Function
 
 Public Sub AddProp(ByVal key As String, ByVal Value As Variant)
     Dim cleanValue As Variant
-    ' --- THIS BLOCK IS NOW CORRECTLY FORMATTED ---
     If IsObject(Value) Then
         Set cleanValue = Value
     ElseIf IsDate(Value) Then
@@ -113,9 +109,15 @@ Public Sub AddProp(ByVal key As String, ByVal Value As Variant)
 End Sub
 
 Private Function GetProp(ByVal key As String, Optional ByVal DefaultValue As Variant) As Variant
-    If m_Properties.Exists(key) Then GetProp = m_Properties.item(key)
+    If m_Properties.Exists(key) Then
+        GetProp = m_Properties.item(key)
     Else
-        If IsMissing(DefaultValue) Then GetProp = Empty Else GetProp = DefaultValue
+        ' --- THIS BLOCK IS NOW CORRECTLY FORMATTED ---
+        If IsMissing(DefaultValue) Then
+            GetProp = Empty
+        Else
+            GetProp = DefaultValue
+        End If
     End If
 End Function
 
