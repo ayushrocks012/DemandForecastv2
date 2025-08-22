@@ -4,15 +4,16 @@ Option Explicit
 '================================================================================================
 ' Module:      mForecasting
 ' Purpose:     Main orchestrator for the forecasting process.
-' Version:     46.2
+' Version:     46.3
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
-' V46.2:       - REFACTOR: Moved module-level variable 'wsLog' into the 'InitializeRun'
-'                procedure to reduce its scope, as suggested by Rubberduck.
-'              - REFACTOR: Converted 'LogPerformance' from a Sub into a Function to make
-'                the reset of the timer variable more explicit.
+' V46.3:       - REFACTOR: Converted 'LogPerformance' back to a Sub that takes the timer
+'                ByRef. This is a cleaner pattern and resolves the "Assignment is not used"
+'                warning from Rubberduck.
+' V46.2:       - REFACTOR: Moved 'wsLog' to a smaller scope and converted 'LogPerformance'
+'                to a Function.
 ' V46.1:       - BUGFIX: Corrected the call to cReportGenerator.Init.
 ' V46.0:       - REFACTOR: Centralized logging and simplified cCalculationEngine interface.
 '================================================================================================
@@ -73,7 +74,7 @@ Private Function InitializeRun() As Boolean
     ' Initialize the new central logger
     mUtilities.InitializeLogger wsLog
     
-    tCheckpoint = LogPerformance(tCheckpoint, "Initialize Environment")
+    LogPerformance tCheckpoint, "Initialize Environment"
     InitializeRun = True
     Exit Function
 
@@ -149,7 +150,7 @@ Next_Affiliate:
         On Error GoTo 0
     Next varAffiliate
     
-    tCheckpoint = LogPerformance(tCheckpoint, "Process All Affiliates")
+    LogPerformance tCheckpoint, "Process All Affiliates"
 End Sub
 
 Private Sub FinalizeRun(ByVal tStart As Double)
@@ -265,7 +266,7 @@ Private Sub InitializeLogSheet(ByVal ws As Worksheet)
     ws.Columns("A:E").AutoFit
 End Sub
 
-Private Function LogPerformance(ByVal tCheckpoint As Double, ByVal strStageName As String) As Double
+Private Sub LogPerformance(ByRef tCheckpoint As Double, ByVal strStageName As String)
     mUtilities.WriteToLog ltProfile, strStageName, "Stage completed in " & format$(Timer - tCheckpoint, "#,##0.00") & "s"
-    LogPerformance = Timer
-End Function
+    tCheckpoint = Timer
+End Sub
