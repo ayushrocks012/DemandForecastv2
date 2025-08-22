@@ -1,3 +1,6 @@
+'---------------------------------------------------------------------------------
+' Module:      mForecasting (Final Version)
+'---------------------------------------------------------------------------------
 '@Folder("Forecasting")
 Option Explicit
 Option Private Module
@@ -8,122 +11,76 @@ Option Private Module
 ' Version:     47.2
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
-'
-' Change Log:
-' V47.2:       - PERFORMANCE: Throttled the StatusBar and DoEvents calls inside the main
-'                loops to prevent excessive UI churn, which improves overall execution speed.
-' V47.1:       - BUGFIX: Added guard clauses and case-insensitive matching for robustness.
-' V47.0:       - PERFORMANCE: Removed slow array scans and now uses pre-computed maps.
 '================================================================================================
 
-'--- Private Module-Level Variables ---
 Private wbHost As Workbook
 Private lngWarningCount As Long
-
-'================================================================================================
-' 1. MAIN PUBLIC ORCHESTRATOR
-'================================================================================================
 
 Public Sub UpdateForecast()
     Dim tStart As Double: tStart = Timer
     Dim dataManager As cDataManager
-    
     If Not InitializeRun() Then GoTo Main_Exit
-    
     Set dataManager = New cDataManager
     dataManager.Init wbHost
     If Not dataManager.LoadAndProcessData() Then GoTo Main_Exit
-    
     ProcessAllAffiliates dataManager
-    
     lngWarningCount = dataManager.WarningCount
-    
 Main_Exit:
     FinalizeRun tStart
 End Sub
 
-
-'================================================================================================
-' 2. CORE WORKFLOW STAGES
-'================================================================================================
-
 Private Function InitializeRun() As Boolean
     Dim tCheckpoint As Double: tCheckpoint = Timer
     Dim wsLog As Worksheet
-    
     On Error GoTo Init_ErrorHandler
-    
     SetupApplication
-    
     Set wbHost = ThisWorkbook
     InitializeAllConfigs
     lngWarningCount = 0
-    
     Application.DisplayAlerts = False
     On Error Resume Next
     wbHost.Sheets(SHEET_LOG).Delete
     On Error GoTo 0
     Application.DisplayAlerts = True
-    
     Set wsLog = wbHost.Sheets.Add(After:=wbHost.Sheets(wbHost.Sheets.Count))
     InitializeLogSheet wsLog
-    
     mUtilities.InitializeLogger wsLog
-    
     LogPerformance tCheckpoint, "Initialize Environment"
     InitializeRun = True
     Exit Function
-
 Init_ErrorHandler:
     MsgBox "A critical error occurred during initialization: " & Err.Description, vbCritical, "Initialization Failed"
     InitializeRun = False
 End Function
 
 Private Sub ProcessAllAffiliates(ByVal dataManager As cDataManager)
-    Dim varAffiliate As Variant, strAffiliate As String
-    Dim lngCounter As Long, lngTotal As Long
+    Dim varAffiliate As Variant, strAffiliate As String, lngCounter As Long, lngTotal As Long
     Dim tCheckpoint As Double: tCheckpoint = Timer
-    
-    Dim engine As cCalculationEngine
-    Set engine = New cCalculationEngine
+    Dim engine As cCalculationEngine: Set engine = New cCalculationEngine
     engine.Init dataManager
-    
-    Dim reporter As cReportGenerator
-    Set reporter = New cReportGenerator
+    Dim reporter As cReportGenerator: Set reporter = New cReportGenerator
     reporter.Init dataManager, wbHost.Path
-    
     lngTotal = dataManager.Affiliates.Count
     If lngTotal = 0 Then
         mUtilities.WriteToLog ltWarning, "ProcessAllAffiliates", "No affiliates found in Demand Forecast sheet."
         Exit Sub
     End If
-    
     For Each varAffiliate In dataManager.Affiliates.Keys
         strAffiliate = CStr(varAffiliate)
         lngCounter = lngCounter + 1
         On Error GoTo Affiliate_ErrorHandler
-        
-        ' --- SUGGESTED FIX (2.3) IMPLEMENTED HERE ---
-        ' Throttle status bar updates to avoid slowing down the process.
         If (lngCounter Mod 5) = 1 Or lngCounter = lngTotal Then
             Application.StatusBar = "Calculating Forecast for " & strAffiliate & " (" & lngCounter & " of " & lngTotal & ")..."
             DoEvents
         End If
-        
         mUtilities.WriteToLog ltInfo, "ProcessAllAffiliates", "Starting Calculations for: " & strAffiliate
-        
         Dim affiliateItems As Object
         Set affiliateItems = GetItemsForAffiliate(strAffiliate, dataManager.ForecastItems)
-
         InitializeForecastValues affiliateItems
         ComputeBaseForecasts strAffiliate, affiliateItems, dataManager
-        
         ApplySuccessorAdjustments affiliateItems
-        
         mUtilities.WriteToLog ltInfo, "ProcessAllAffiliates", "Finished Calculations for: " & strAffiliate
-        
         mUtilities.WriteToLog ltInfo, "ProcessAllAffiliates", "Starting Reporting for: " & strAffiliate
-        
         Dim dictCustomers As Object
         If dataManager.CustomersByAffiliate.Exists(strAffiliate) Then
             Set dictCustomers = dataManager.CustomersByAffiliate.item(strAffiliate)
@@ -132,26 +89,18 @@ Private Sub ProcessAllAffiliates(ByVal dataManager As cDataManager)
                 "No customers found for affiliate '" & strAffiliate & "' in Demand Forecast sheet. Skipping report generation."
             GoTo Next_Affiliate
         End If
-        
         Dim varCustomer As Variant, custCounter As Long, custTotal As Long
         custTotal = dictCustomers.Count
         custCounter = 0
-        
         For Each varCustomer In dictCustomers.Keys
             custCounter = custCounter + 1
-            
-            ' --- SUGGESTED FIX (2.3) IMPLEMENTED HERE ---
-            ' Throttle status bar updates for the inner loop as well.
             If (custCounter Mod 10) = 1 Or custCounter = custTotal Then
                 Application.StatusBar = "Generating Report for " & strAffiliate & " - " & CStr(varCustomer) & " (" & custCounter & " of " & custTotal & ")..."
                 DoEvents
             End If
-            
             reporter.GenerateCustomerReport strAffiliate, CStr(varCustomer)
         Next varCustomer
-        
         mUtilities.WriteToLog ltInfo, "ProcessAllAffiliates", "Finished Reporting for: " & strAffiliate
-        
         GoTo Next_Affiliate
 Affiliate_ErrorHandler:
         lngWarningCount = lngWarningCount + 1
@@ -160,60 +109,41 @@ Affiliate_ErrorHandler:
 Next_Affiliate:
         On Error GoTo 0
     Next varAffiliate
-    
     LogPerformance tCheckpoint, "Process All Affiliates"
 End Sub
 
 Private Sub FinalizeRun(ByVal tStart As Double)
     On Error Resume Next
-    
     CleanupAllConfigs
     mUtilities.CleanupLogger
-    
     Application.StatusBar = False
     Application.Calculation = xlCalculationAutomatic
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
     Application.EnableEvents = True
-    
     Dim strMessage As String
     strMessage = "Forecast process completed in " & format$(Timer - tStart, "#,##0.00") & " seconds." & vbCrLf & vbCrLf
     strMessage = strMessage & "Warnings: " & lngWarningCount & " (see Log sheet for details)"
-    
     MsgBox strMessage, IIf(lngWarningCount > 0, vbExclamation, vbInformation), "Forecast Update Complete"
-    
     On Error GoTo 0
 End Sub
-
-
-'================================================================================================
-' 3. FORECAST CALCULATION LOGIC
-'================================================================================================
 
 Private Sub InitializeForecastValues(ByVal dictAffiliateItems As Object)
     Dim forecastItem As cForecastItem, itemKey As Variant
     For Each itemKey In dictAffiliateItems.Keys
         Set forecastItem = dictAffiliateItems.item(itemKey)
-        Set forecastItem.ForecastValues = CreateObject("Scripting.Dictionary")
+        Set forecastItem.ForecastValues = mUtilities.NewDict(False)
     Next itemKey
 End Sub
 
 Private Sub ComputeBaseForecasts(ByVal strAffiliate As String, ByVal dictAffiliateItems As Object, ByVal dataManager As cDataManager)
-    Dim forecastItem As cForecastItem, itemKey As Variant
-    Dim keyFigure As Variant, varCustomer As Variant
-    
-    Dim dictCustomers As Object
-    Set dictCustomers = dataManager.CustomersByAffiliate.item(strAffiliate)
-    
-    Dim engine As cCalculationEngine
-    Set engine = New cCalculationEngine
+    Dim forecastItem As cForecastItem, itemKey As Variant, keyFigure As Variant, varCustomer As Variant
+    Dim dictCustomers As Object: Set dictCustomers = dataManager.CustomersByAffiliate.item(strAffiliate)
+    Dim engine As cCalculationEngine: Set engine = New cCalculationEngine
     engine.Init dataManager
-    
     For Each itemKey In dictAffiliateItems.Keys
         Set forecastItem = dictAffiliateItems.item(itemKey)
-        
         If DEBUG_MODE Then mUtilities.WriteToLog ltInfo, "ComputeBaseForecasts", "Processing Item: " & forecastItem.DebugSummary()
-        
         For Each varCustomer In dictCustomers.Keys
             For Each keyFigure In dataManager.KeyFigures.Keys
                 engine.Execute forecastItem, CStr(varCustomer), CStr(keyFigure)
@@ -230,22 +160,15 @@ Private Sub ApplySuccessorAdjustments(ByVal dictAffiliateItems As Object)
     End If
 End Sub
 
-
-'================================================================================================
-' 4. UTILITY & HELPER FUNCTIONS
-'================================================================================================
-
 Private Function GetItemsForAffiliate(ByVal strAffiliate As String, ByVal allItems As Object) As Object
     Dim dict As Object: Set dict = mUtilities.NewDict()
     Dim itemKey As Variant, item As cForecastItem
-    
     For Each itemKey In allItems.Keys
         Set item = allItems.item(itemKey)
         If StrComp(item.Affiliate, strAffiliate, vbTextCompare) = 0 Then
             dict.Add itemKey, item
         End If
     Next itemKey
-    
     Set GetItemsForAffiliate = dict
 End Function
 
@@ -267,7 +190,6 @@ Private Sub InitializeLogSheet(ByVal ws As Worksheet)
         ws.Name = SHEET_LOG
     End If
     On Error GoTo 0
-    
     With ws.Range("A1:E1")
         .Value = Array("Timestamp", "Type", "Procedure", "Message", "Context / Error")
         .Font.Bold = True
