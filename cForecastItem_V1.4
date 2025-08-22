@@ -1,31 +1,26 @@
+'---------------------------------------------------------------------------------
+' Module:      cForecastItem (Final Version)
+'---------------------------------------------------------------------------------
 '@Folder("Classes")
 Option Explicit
 
 '================================================================================================
 ' Class:       cForecastItem
 ' Purpose:     Represents a single, generic item to be forecasted.
-' Version:     3.4
+' Version:     3.5
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
-' V3.4:        - PERFORMANCE: The Init method now caches all column indices at the start
-'                to avoid repeated dictionary lookups inside the procedure.
-'              - ROBUSTNESS: The Init method now uses GetColStrict for mandatory columns
-'                to ensure the application fails fast on configuration errors.
+' V3.5:        - REFACTOR: All dictionary objects are now created using the central
+'                mUtilities.NewDict() factory function for consistency.
+' V3.4:        - PERFORMANCE: The Init method now caches all column indices.
 ' V3.3:        - BUGFIX: Corrected Enum type reference.
 '================================================================================================
 
-' --- Private Member Variables ---
 Private m_Properties As Object
 Private m_ForecastValues As Object
-
-' --- Constants ---
 Private Const DEFAULT_PHASE_OUT_PCT As Double = 1#
-
-'================================================================================================
-'--- PUBLIC WRAPPER PROPERTIES (For Reporting and Business Logic) ---
-'================================================================================================
 
 Public Property Get Affiliate() As String: Affiliate = GetProp("Affiliate"): End Property
 Public Property Get ForecastTier() As String: ForecastTier = GetProp("Tier"): End Property
@@ -34,61 +29,31 @@ Public Property Get LocalItemNbr() As String: LocalItemNbr = GetProp("LocalItemN
 Public Property Get Description() As String: Description = GetProp("Description"): End Property
 Public Property Get ISD() As String: ISD = GetProp("ISD"): End Property
 Public Property Get Status() As ProductStatus: Status = GetProp("Status"): End Property
-
 Public Property Get PhaseOutDate() As Variant
-    Dim val As Variant
-    val = GetProp("PhaseOutDate")
-    If IsDate(val) And val > 0 Then
-        PhaseOutDate = val
-    Else
-        PhaseOutDate = Empty
-    End If
+    Dim val As Variant: val = GetProp("PhaseOutDate")
+    If IsDate(val) And val > 0 Then PhaseOutDate = val Else PhaseOutDate = Empty
 End Property
-
 Public Property Get PhaseOutPercent() As Double: PhaseOutPercent = GetProp("PhaseOutPercent"): End Property
 Public Property Get SupersededByProductID() As String: SupersededByProductID = GetProp("SupersededBy"): End Property
-
-Public Property Get IsPhasingOut() As Boolean
-    IsPhasingOut = (Me.Status = psPhaseOut Or Me.Status = psDiscontinued)
-End Property
-
+Public Property Get IsPhasingOut() As Boolean: IsPhasingOut = (Me.Status = psPhaseOut Or Me.Status = psDiscontinued): End Property
 Public Property Get IsPhasingIn() As Boolean: IsPhasingIn = GetProp("IsPhasingIn", False): End Property
 Public Property Get PhaseInDate() As Date: PhaseInDate = GetProp("PhaseInDate"): End Property
 Public Property Get PhaseInPercent() As Double: PhaseInPercent = GetProp("PhaseInPercent"): End Property
-
 Public Property Get ForecastValues() As Object: Set ForecastValues = m_ForecastValues: End Property
 Public Property Set ForecastValues(ByVal Value As Object): Set m_ForecastValues = Value: End Property
-
-Public Property Get StatusString() As String
-    StatusString = GetStatusString(Me.Status)
-End Property
-
-'================================================================================================
-'--- INITIALIZATION AND LIFECYCLE LOGIC ---
-'================================================================================================
+Public Property Get StatusString() As String: StatusString = GetStatusString(Me.Status): End Property
 
 Private Sub Class_Initialize()
-    Set m_Properties = CreateObject("Scripting.Dictionary")
-    m_Properties.CompareMode = vbTextCompare
-    Set m_ForecastValues = CreateObject("Scripting.Dictionary")
+    Set m_Properties = mUtilities.NewDict()
+    Set m_ForecastValues = mUtilities.NewDict(False) ' Keys are dates/strings, not case-sensitive
 End Sub
 
 Public Sub Init(ByVal ds As cDataSource, ByVal arrDataSource As Variant, ByVal lngRow As Long)
-    ' --- SUGGESTED FIX (2.2) IMPLEMENTED HERE ---
-    ' Cache column indices once at the start of the routine for performance and safety.
     Dim cAff As Long, cTier As Long, cSubTier As Long, cItem As Long, cDesc As Long, cISD As Long, cStatus As Long, cSup As Long, cPOD As Long, cPOPct As Long
-    cAff = ds.GetColStrict("Affiliate")
-    cTier = ds.GetColStrict("Tier")
-    cSubTier = ds.GetColStrict("SubTier")
-    cItem = ds.GetColStrict("LocalItemNbr")
-    cDesc = ds.GetColStrict("Description")
-    cISD = ds.GetColStrict("ISD")
-    cStatus = ds.GetColStrict("Status")
-    cSup = ds.GetColStrict("SupersededBy")
-    ' These columns are optional, so we use the non-strict GetCol
-    cPOD = ds.GetCol("PhaseOutDate")
-    cPOPct = ds.GetCol("PhaseOutPercent")
-
+    cAff = ds.GetColStrict("Affiliate"): cTier = ds.GetColStrict("Tier"): cSubTier = ds.GetColStrict("SubTier")
+    cItem = ds.GetColStrict("LocalItemNbr"): cDesc = ds.GetColStrict("Description"): cISD = ds.GetColStrict("ISD")
+    cStatus = ds.GetColStrict("Status"): cSup = ds.GetColStrict("SupersededBy")
+    cPOD = ds.GetCol("PhaseOutDate"): cPOPct = ds.GetCol("PhaseOutPercent")
     AddProp "Affiliate", arrDataSource(lngRow, cAff)
     AddProp "Tier", arrDataSource(lngRow, cTier)
     AddProp "SubTier", arrDataSource(lngRow, cSubTier)
@@ -97,23 +62,18 @@ Public Sub Init(ByVal ds As cDataSource, ByVal arrDataSource As Variant, ByVal l
     AddProp "ISD", arrDataSource(lngRow, cISD)
     AddProp "Status", GetStatusEnum(arrDataSource(lngRow, cStatus))
     AddProp "SupersededBy", arrDataSource(lngRow, cSup)
-    
     HandlePhaseOutInit arrDataSource, lngRow, cPOD, cPOPct
 End Sub
 
 Public Function GetForecastMultiplier(ByVal dteForecastDate As Date) As Double
-    GetForecastMultiplier = 1 ' Default to full forecast
-
+    GetForecastMultiplier = 1
     If Me.IsPhasingIn And Me.PhaseInDate > 0 Then
         If FirstDayOfMonth(dteForecastDate) < FirstDayOfMonth(Me.PhaseInDate) Then
-            GetForecastMultiplier = 0
-            Exit Function
+            GetForecastMultiplier = 0: Exit Function
         ElseIf FirstDayOfMonth(dteForecastDate) = FirstDayOfMonth(Me.PhaseInDate) Then
-            GetForecastMultiplier = Me.PhaseInPercent
-            Exit Function
+            GetForecastMultiplier = Me.PhaseInPercent: Exit Function
         End If
     End If
-
     If Me.IsPhasingOut And Me.PhaseOutDate > 0 Then
         If FirstDayOfMonth(dteForecastDate) > FirstDayOfMonth(Me.PhaseOutDate) Then
             GetForecastMultiplier = 0
@@ -133,54 +93,35 @@ Public Function DebugSummary() As String
     DebugSummary = Me.Affiliate & " | " & Me.LocalItemNbr & " | " & GetStatusString(Me.Status)
 End Function
 
-'================================================================================================
-'--- PRIVATE HELPER METHODS ---
-'================================================================================================
-
 Public Sub AddProp(ByVal key As String, ByVal Value As Variant)
     Dim cleanValue As Variant
-    If IsObject(Value) Then
-        Set cleanValue = Value
-    ElseIf IsDate(Value) Then
-        cleanValue = CDate(Value)
-    Else
-        cleanValue = Trim$(CStr(Value))
+    If IsObject(Value) Then Set cleanValue = Value
+    ElseIf IsDate(Value) Then cleanValue = CDate(Value)
+    Else cleanValue = Trim$(CStr(Value))
     End If
-
-    If m_Properties.Exists(key) Then
-        m_Properties.item(key) = cleanValue
-    Else
-        m_Properties.Add key, cleanValue
+    If m_Properties.Exists(key) Then m_Properties.item(key) = cleanValue
+    Else m_Properties.Add key, cleanValue
     End If
 End Sub
 
 Private Function GetProp(ByVal key As String, Optional ByVal DefaultValue As Variant) As Variant
-    If m_Properties.Exists(key) Then
-        GetProp = m_Properties.item(key)
+    If m_Properties.Exists(key) Then GetProp = m_Properties.item(key)
     Else
-        If IsMissing(DefaultValue) Then
-            GetProp = Empty
-        Else
-            GetProp = DefaultValue
-        End If
+        If IsMissing(DefaultValue) Then GetProp = Empty Else GetProp = DefaultValue
     End If
 End Function
 
 Private Sub HandlePhaseOutInit(ByVal arrDataSource As Variant, ByVal lngRow As Long, ByVal colPOD As Long, ByVal colPOPct As Long)
     Dim varPhaseOutPct As Variant
     If colPOPct > 0 Then varPhaseOutPct = arrDataSource(lngRow, colPOPct)
-    
     If IsNumeric(varPhaseOutPct) And varPhaseOutPct >= 0 And varPhaseOutPct <= 1 Then
         AddProp "PhaseOutPercent", CDbl(varPhaseOutPct)
     Else
         AddProp "PhaseOutPercent", DEFAULT_PHASE_OUT_PCT
     End If
-
     If Me.Status = psPhaseOut Or Me.Status = psDiscontinued Then
         If colPOD > 0 Then
-            If IsDate(arrDataSource(lngRow, colPOD)) Then
-                AddProp "PhaseOutDate", CDate(arrDataSource(lngRow, colPOD))
-            End If
+            If IsDate(arrDataSource(lngRow, colPOD)) Then AddProp "PhaseOutDate", CDate(arrDataSource(lngRow, colPOD))
         End If
     End If
 End Sub
