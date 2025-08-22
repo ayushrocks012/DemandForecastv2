@@ -1,0 +1,38 @@
+'@Folder("Classes")
+Option Explicit
+
+'================================================================================================
+' Class:       cKeyBuilder
+' Purpose:     Centralizes the logic for creating all composite, pipe-delimited keys used
+'              throughout the application. This ensures consistency and makes future
+'              changes to key structures easy to manage in one location.
+' Version:     1.0
+' Author:      Ayush Goyal
+' Date:        22-Aug-2025
+'================================================================================================
+
+Private Const SEPARATOR As String = "|"
+
+Public Function BuildTotalLevelKey(ByVal affiliate As String, ByVal customer As String, ByVal tier As String, ByVal keyFigure As String) As String
+' Purpose: Builds the key for historical sums and demand at the TIER level.
+' Key:     Affiliate|Customer|ForecastTier|KeyFigure
+    BuildTotalLevelKey = affiliate & SEPARATOR & customer & SEPARATOR & tier & SEPARATOR & keyFigure
+End Function
+
+Public Function BuildShareLevelKey(ByVal affiliate As String, ByVal customer As String, ByVal tier As String, ByVal subTier As String, ByVal keyFigure As String) As String
+' Purpose: Builds the key for historical sums at the SUB-TIER level.
+' Key:     Affiliate|Customer|ForecastSubTier|ForecastTier|KeyFigure
+    BuildShareLevelKey = affiliate & SEPARATOR & customer & SEPARATOR & subTier & SEPARATOR & tier & SEPARATOR & keyFigure
+End Function
+
+Public Function BuildDemandKey(ByVal affiliate As String, ByVal customer As String, ByVal tier As String, ByVal keyFigure As String, ByVal dteMonth As Date) As String
+' Purpose: Builds the key for the monthly demand forecast cache.
+' Key:     Affiliate|Customer|ForecastTier|KeyFigure|Month
+    BuildDemandKey = affiliate & SEPARATOR & customer & SEPARATOR & tier & SEPARATOR & keyFigure & SEPARATOR & dteMonth
+End Function
+
+Public Function BuildHistoryCacheKey(ByVal affiliate As String, ByVal customer As String, ByVal keyFigure As String, ByVal localItemNbr As String) As String
+' Purpose: Builds the key for the detailed monthly historical sales cache.
+' Key:     Affiliate|Customer|KeyFigure|LocalItemNbr
+    BuildHistoryCacheKey = affiliate & SEPARATOR & customer & SEPARATOR & keyFigure & SEPARATOR & localItemNbr
+End Function
