@@ -4,14 +4,15 @@ Option Explicit
 '================================================================================================
 ' Class:       cDataManager
 ' Purpose:     Encapsulates all data loading, validation, and caching logic.
-' Version:     3.2
+' Version:     3.3
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
-' V3.2:        - BUGFIX: Made the dictionary increment logic in BuildDataCaches robust.
-'                It now explicitly checks if a key exists before trying to increment its
-'                value, preventing runtime errors on non-existent keys.
+' V3.3:        - BUGFIX: Corrected a major data integrity issue in BuildHistoryCache where
+'                duplicate rows for an item were being ignored. The logic now correctly
+'                sums all monthly values across duplicate rows.
+' V3.2:        - BUGFIX: Made dictionary increment logic in BuildDataCaches robust.
 ' V3.1:        - REFACTOR: Removed dependency on the log sheet.
 ' V3.0:        - REFACTOR: Centralized logging, key-building, and improved encapsulation.
 '================================================================================================
@@ -222,8 +223,10 @@ End Sub
 '================================================================================================
 
 Private Sub BuildHistoryCache()
+    ' --- SUGGESTED FIX (D) IMPLEMENTED HERE ---
     Set m_dictHistoryCache = CreateObject("Scripting.Dictionary")
-    Dim r As Long, strKey As String, dictMonthlyValues As Object
+    Dim r As Long, c As Long
+    Dim strKey As String, dictMonthlyValues As Object
     
     For r = 2 To UBound(m_arrHistoryData, 1)
         strKey = m_KeyBuilder.BuildHistoryCacheKey( _
@@ -233,20 +236,28 @@ Private Sub BuildHistoryCache()
             m_arrHistoryData(r, HistorySource.GetCol("LocalItemNbr")) _
         )
         
+        ' If key doesn't exist, create it and initialize all months to zero.
         If Not m_dictHistoryCache.Exists(strKey) Then
             Set dictMonthlyValues = CreateObject("Scripting.Dictionary")
-            Dim dteMonth As Variant
-            For Each dteMonth In m_colHistoryMonths
-                Dim c As Long
-                For c = HistorySource.StartOfMonthsCol To UBound(m_arrHistoryData, 2)
-                    If CDate(m_arrHistoryData(1, c)) = dteMonth Then
-                        dictMonthlyValues.Add dteMonth, m_arrHistoryData(r, c)
-                        Exit For
-                    End If
-                Next c
-            Next dteMonth
+            Dim dte As Variant
+            For Each dte In m_colHistoryMonths
+                dictMonthlyValues.Add dte, 0#
+            Next dte
             m_dictHistoryCache.Add strKey, dictMonthlyValues
         End If
+        
+        ' Now, sum this row's monthly values into the cache.
+        Dim dteMonth As Variant
+        For Each dteMonth In m_colHistoryMonths
+            For c = HistorySource.StartOfMonthsCol To UBound(m_arrHistoryData, 2)
+                If CDate(m_arrHistoryData(1, c)) = dteMonth Then
+                    If IsNumeric(m_arrHistoryData(r, c)) Then
+                        m_dictHistoryCache.item(strKey).item(dteMonth) = m_dictHistoryCache.item(strKey).item(dteMonth) + CDbl(m_arrHistoryData(r, c))
+                    End If
+                    Exit For ' Found the matching month column, move to next date
+                End If
+            Next c
+        Next dteMonth
     Next r
 End Sub
 
@@ -273,7 +284,6 @@ Private Sub BuildDataCaches()
             If IsNumeric(m_arrHistoryData(r, c)) Then dblSum = dblSum + CDbl(m_arrHistoryData(r, c))
         Next c
         
-        ' --- SUGGESTED FIX (B) IMPLEMENTED HERE ---
         If m_dictHistSumCache.Exists(strSubTierKey) Then
             m_dictHistSumCache.item(strSubTierKey) = m_dictHistSumCache.item(strSubTierKey) + dblSum
         Else
@@ -303,7 +313,6 @@ Private Sub BuildDataCaches()
             Dim demandValue As Double
             If IsNumeric(m_arrDemandData(r, col)) Then demandValue = CDbl(m_arrDemandData(r, col))
             
-            ' --- SUGGESTED FIX (B) IMPLEMENTED HERE ---
             If m_dictDemandCache.Exists(strDemandKey) Then
                 m_dictDemandCache.item(strDemandKey) = m_dictDemandCache.item(strDemandKey) + demandValue
             Else
