@@ -5,16 +5,14 @@ Option Private Module
 '================================================================================================
 ' Module:      mForecasting
 ' Purpose:     Main orchestrator for the forecasting process.
-' Version:     47.1
+' Version:     47.2
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
-' V47.1:       - BUGFIX: Added a guard clause in ProcessAllAffiliates to safely handle cases
-'                where an affiliate exists but has no corresponding customer data.
-'              - BUGFIX: GetItemsForAffiliate now uses a case-insensitive comparison to
-'                prevent mismatches between data sources.
-'              - REFACTOR: Added 'Option Private Module'.
+' V47.2:       - PERFORMANCE: Throttled the StatusBar and DoEvents calls inside the main
+'                loops to prevent excessive UI churn, which improves overall execution speed.
+' V47.1:       - BUGFIX: Added guard clauses and case-insensitive matching for robustness.
 ' V47.0:       - PERFORMANCE: Removed slow array scans and now uses pre-computed maps.
 '================================================================================================
 
@@ -105,8 +103,12 @@ Private Sub ProcessAllAffiliates(ByVal dataManager As cDataManager)
         lngCounter = lngCounter + 1
         On Error GoTo Affiliate_ErrorHandler
         
-        Application.StatusBar = "Calculating Forecast for " & strAffiliate & " (" & lngCounter & " of " & lngTotal & ")..."
-        DoEvents
+        ' --- SUGGESTED FIX (2.3) IMPLEMENTED HERE ---
+        ' Throttle status bar updates to avoid slowing down the process.
+        If (lngCounter Mod 5) = 1 Or lngCounter = lngTotal Then
+            Application.StatusBar = "Calculating Forecast for " & strAffiliate & " (" & lngCounter & " of " & lngTotal & ")..."
+            DoEvents
+        End If
         
         mUtilities.WriteToLog ltInfo, "ProcessAllAffiliates", "Starting Calculations for: " & strAffiliate
         
@@ -123,8 +125,6 @@ Private Sub ProcessAllAffiliates(ByVal dataManager As cDataManager)
         mUtilities.WriteToLog ltInfo, "ProcessAllAffiliates", "Starting Reporting for: " & strAffiliate
         
         Dim dictCustomers As Object
-        ' --- SUGGESTED FIX (1.1) IMPLEMENTED HERE ---
-        ' Guard against affiliates that exist in status but not demand sheets.
         If dataManager.CustomersByAffiliate.Exists(strAffiliate) Then
             Set dictCustomers = dataManager.CustomersByAffiliate.item(strAffiliate)
         Else
@@ -139,8 +139,13 @@ Private Sub ProcessAllAffiliates(ByVal dataManager As cDataManager)
         
         For Each varCustomer In dictCustomers.Keys
             custCounter = custCounter + 1
-            Application.StatusBar = "Generating Report for " & strAffiliate & " - " & CStr(varCustomer) & " (" & custCounter & " of " & custTotal & ")..."
-            DoEvents
+            
+            ' --- SUGGESTED FIX (2.3) IMPLEMENTED HERE ---
+            ' Throttle status bar updates for the inner loop as well.
+            If (custCounter Mod 10) = 1 Or custCounter = custTotal Then
+                Application.StatusBar = "Generating Report for " & strAffiliate & " - " & CStr(varCustomer) & " (" & custCounter & " of " & custTotal & ")..."
+                DoEvents
+            End If
             
             reporter.GenerateCustomerReport strAffiliate, CStr(varCustomer)
         Next varCustomer
@@ -198,7 +203,6 @@ Private Sub ComputeBaseForecasts(ByVal strAffiliate As String, ByVal dictAffilia
     Dim keyFigure As Variant, varCustomer As Variant
     
     Dim dictCustomers As Object
-    ' No need for a guard here, because if it didn't exist, we would have exited in the calling sub.
     Set dictCustomers = dataManager.CustomersByAffiliate.item(strAffiliate)
     
     Dim engine As cCalculationEngine
@@ -232,13 +236,11 @@ End Sub
 '================================================================================================
 
 Private Function GetItemsForAffiliate(ByVal strAffiliate As String, ByVal allItems As Object) As Object
-    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    Dim dict As Object: Set dict = mUtilities.NewDict()
     Dim itemKey As Variant, item As cForecastItem
     
     For Each itemKey In allItems.Keys
         Set item = allItems.item(itemKey)
-        ' --- SUGGESTED FIX (1.2) IMPLEMENTED HERE ---
-        ' Use a case-insensitive comparison for robustness.
         If StrComp(item.Affiliate, strAffiliate, vbTextCompare) = 0 Then
             dict.Add itemKey, item
         End If
