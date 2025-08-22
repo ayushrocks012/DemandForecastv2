@@ -1,0 +1,77 @@
+'@Folder("Configuration")
+Option Explicit
+Option Private Module
+
+'================================================================================================
+' Module:      mUtilities
+' Purpose:     Provides globally accessible utility functions, such as logging, to avoid
+'              code duplication across the project (DRY principle).
+' Version:     1.1
+' Author:      Ayush Goyal
+' Date:        22-Aug-2025
+'
+' Change Log:
+' V1.1:        - BUGFIX: Made the WriteToLog procedure resilient to a blank or cleared log
+'                sheet by ensuring it never writes to a row less than 2.
+'              - REFACTOR: Added 'Option Private Module' to hide procedures from the user
+'                in the main Macro dialog (Alt+F8).
+' V1.0:        - Initial creation.
+'================================================================================================
+
+' --- Private Module-Level Variables ---
+Private m_wsLog As Worksheet
+
+'================================================================================================
+'--- PUBLIC METHODS ---
+'================================================================================================
+
+Public Sub InitializeLogger(ByVal logSheet As Worksheet)
+' Purpose: Accepts the log sheet object from the main process to be used by the logger.
+    Set m_wsLog = logSheet
+End Sub
+
+Public Sub WriteToLog(ByVal logType As logType, ByVal procedureName As String, ByVal message As String, Optional ByVal errNumber As Long = 0, Optional ByVal errContext As String = "")
+' Purpose: Writes a new entry to the log sheet.
+    If m_wsLog Is Nothing Then Exit Sub
+    
+    Dim nextRow As Long
+    On Error Resume Next
+    nextRow = m_wsLog.Cells(m_wsLog.Rows.Count, "A").End(xlUp).Row + 1
+    If Err.Number <> 0 Then nextRow = 2 ' If sheet is empty, End(xlUp) fails. Start at row 2.
+    On Error GoTo 0
+    
+    ' --- SUGGESTED FIX (1.4) IMPLEMENTED HERE ---
+    ' Final check to ensure we never overwrite the header in row 1.
+    If nextRow < 2 Then nextRow = 2
+
+    With m_wsLog.Rows(nextRow)
+        .Cells(1).Value = Now()
+        .Cells(2).Value = GetLogTypeString(logType)
+        .Cells(3).Value = procedureName
+        .Cells(4).Value = message
+        If errNumber <> 0 Then .Cells(5).Value = "Err " & errNumber & ": " & errContext Else .Cells(5).Value = errContext
+    End With
+End Sub
+
+Public Function GetLogTypeString(ByVal logType As logType) As String
+' Purpose: Converts a logType enum to its string representation.
+    Select Case logType
+        Case ltInfo: GetLogTypeString = "Info"
+        Case ltWarning: GetLogTypeString = "Warning"
+        Case ltError: GetLogTypeString = "Error"
+        Case ltFatal: GetLogTypeString = "FATAL"
+        Case ltProfile: GetLogTypeString = "Profile"
+    End Select
+End Function
+
+Public Sub CleanupLogger()
+' Purpose: Releases the reference to the log sheet.
+    Set m_wsLog = Nothing
+End Sub
+
+Public Function NewDict(Optional ByVal textCompare As Boolean = True) As Object
+' Purpose: Central factory for creating dictionaries, ensuring consistent CompareMode.
+    Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
+    If textCompare Then d.CompareMode = vbTextCompare
+    Set NewDict = d
+End Function
