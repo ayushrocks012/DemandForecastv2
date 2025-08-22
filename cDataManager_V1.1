@@ -1,0 +1,364 @@
+'@Folder("Classes")
+Option Explicit
+
+'================================================================================================
+' Class:       cDataManager
+' Purpose:     Encapsulates all data loading, validation, and caching logic.
+' Version:     3.0
+' Author:      Ayush Goyal
+' Date:        22-Aug-2025
+'
+' Change Log:
+' V3.0:        - REFACTOR: Removed local logging functions and now uses mUtilities.
+'              - REFACTOR: Replaced all inline key-building logic with calls to the new
+'                cKeyBuilder class.
+'              - REFACTOR: Added new public properties 'HistoryMonths' and 'ForecastMonths'
+'                to share date headers with other classes without exposing raw data arrays,
+'                improving encapsulation.
+' V2.3:        - BUGFIX: Corrected Enum type references.
+'================================================================================================
+
+' --- Private Member Variables ---
+Private m_wbHost As Workbook
+Private m_wsLog As Worksheet
+Private m_lngWarningCount As Long
+Private m_KeyBuilder As cKeyBuilder
+
+' --- Raw Data Arrays ---
+Private m_arrStatusData As Variant
+Private m_arrHistoryData As Variant
+Private m_arrDemandData As Variant
+
+' --- Processed Data Collections & Caches ---
+Private m_dictForecastItemMap As Object
+Private m_dictAffiliates As Object
+Private m_dictKeyFigures As Object
+Private m_dictHistoryCache As Object
+Private m_dictHistSumCache As Object
+Private m_dictDemandCache As Object
+Private m_dictValidatedChains As Object
+Private m_colHistoryMonths As Collection
+Private m_colForecastMonths As Collection
+
+' --- Public Read-Only Properties to Access Data ---
+Public Property Get ForecastItems() As Object: Set ForecastItems = m_dictForecastItemMap: End Property
+Public Property Get Affiliates() As Object: Set Affiliates = m_dictAffiliates: End Property
+Public Property Get KeyFigures() As Object: Set KeyFigures = m_dictKeyFigures: End Property
+Public Property Get HistorySumCache() As Object: Set HistorySumCache = m_dictHistSumCache: End Property
+Public Property Get DemandCache() As Object: Set DemandCache = m_dictDemandCache: End Property
+Public Property Get DemandDataArray() As Variant: DemandDataArray = m_arrDemandData: End Property
+Public Property Get HistoryDataArray() As Variant: HistoryDataArray = m_arrHistoryData: End Property
+Public Property Get HistoryCache() As Object: Set HistoryCache = m_dictHistoryCache: End Property
+Public Property Get WarningCount() As Long: WarningCount = m_lngWarningCount: End Property
+Public Property Get HistoryMonths() As Collection: Set HistoryMonths = m_colHistoryMonths: End Property
+Public Property Get ForecastMonths() As Collection: Set ForecastMonths = m_colForecastMonths: End Property
+
+'================================================================================================
+'--- INITIALIZATION & PUBLIC METHODS ---
+'================================================================================================
+
+Private Sub Class_Initialize()
+    Set m_KeyBuilder = New cKeyBuilder
+End Sub
+
+Public Sub Init(ByVal hostWorkbook As Workbook, ByVal logSheet As Worksheet)
+    Set m_wbHost = hostWorkbook
+    Set m_wsLog = logSheet
+    m_lngWarningCount = 0
+End Sub
+
+Public Function LoadAndProcessData() As Boolean
+    Dim tCheckpoint As Double: tCheckpoint = Timer
+    
+    If Not LoadAndValidateSourceSheets() Then GoTo Main_Exit
+    
+    Application.StatusBar = "Building data caches and maps..."
+    
+    Set m_dictForecastItemMap = BuildForecastItemMap(m_arrStatusData)
+    ValidateSuccessorLinks
+    
+    Set m_dictAffiliates = GetUniqueValues(m_arrDemandData, DemandSource.GetCol("Affiliate"))
+    Set m_dictKeyFigures = GetUniqueValues(m_arrDemandData, DemandSource.GetCol("KeyFigure"))
+    
+    BuildHistoryCache
+    BuildDataCaches
+    
+    LogPerformance tCheckpoint, "Build Caches and Maps"
+    LoadAndProcessData = True
+    Exit Function
+    
+Main_Exit:
+    LoadAndProcessData = False
+End Function
+
+'================================================================================================
+'--- PRIVATE DATA LOADING AND VALIDATION (OPTIMIZED) ---
+'================================================================================================
+
+Private Function LoadAndValidateSourceSheets() As Boolean
+    Dim tCheckpoint As Double: tCheckpoint = Timer
+    On Error GoTo Load_ErrorHandler
+    
+    Application.StatusBar = "Loading and validating source data..."
+    
+    If Not SheetExists(ProductStatusSource.sheetName) Then Err.Raise 515, , "Required sheet '" & ProductStatusSource.sheetName & "' not found."
+    If Not SheetExists(HistorySource.sheetName) Then Err.Raise 516, , "Required sheet '" & HistorySource.sheetName & "' not found."
+    If Not SheetExists(DemandSource.sheetName) Then Err.Raise 517, , "Required sheet '" & DemandSource.sheetName & "' not found."
+    
+    m_arrStatusData = LoadDataToArray(m_wbHost.Sheets(ProductStatusSource.sheetName))
+    m_arrHistoryData = LoadDataToArray(m_wbHost.Sheets(HistorySource.sheetName))
+    m_arrDemandData = LoadDataToArray(m_wbHost.Sheets(DemandSource.sheetName))
+    
+    ' Populate the month header collections
+    PopulateMonthCollections
+    
+    mUtilities.WriteToLog ltInfo, "DataManager.Load", "All source data loaded and validated."
+    LogPerformance tCheckpoint, "Load & Validate Data"
+    LoadAndValidateSourceSheets = True
+    Exit Function
+
+Load_ErrorHandler:
+    Dim strErrorMsg As String: strErrorMsg = "Failed to load source sheets. " & vbCrLf & Err.Description
+    mUtilities.WriteToLog ltFatal, "DataManager.Load", strErrorMsg, Err.Number
+    MsgBox strErrorMsg, vbCritical, "Process Halted"
+    LoadAndValidateSourceSheets = False
+End Function
+
+Private Sub PopulateMonthCollections()
+' Purpose: Extracts the date headers from the raw data arrays into collections.
+    Dim c As Long
+    Set m_colHistoryMonths = New Collection
+    If Not IsEmpty(m_arrHistoryData) Then
+        For c = HistorySource.StartOfMonthsCol To UBound(m_arrHistoryData, 2)
+            m_colHistoryMonths.Add CDate(m_arrHistoryData(1, c))
+        Next c
+    End If
+    
+    Set m_colForecastMonths = New Collection
+    If Not IsEmpty(m_arrDemandData) Then
+        For c = DemandSource.StartOfMonthsCol To UBound(m_arrDemandData, 2)
+            m_colForecastMonths.Add CDate(m_arrDemandData(1, c))
+        Next c
+    End If
+End Sub
+
+Private Function BuildForecastItemMap(ByVal arrStatus As Variant) As Object
+    Dim dictMap As Object: Set dictMap = CreateObject("Scripting.Dictionary")
+    Dim rowIndex As Long, obj As cForecastItem, strKey As String
+    
+    For rowIndex = 2 To UBound(arrStatus, 1)
+        If GetStatusEnum(arrStatus(rowIndex, ProductStatusSource.GetCol("Status"))) <> psNotApplicable Then
+            strKey = arrStatus(rowIndex, ProductStatusSource.GetCol("Affiliate")) & "|" & arrStatus(rowIndex, ProductStatusSource.GetCol("ISD"))
+            
+            If Not dictMap.Exists(strKey) Then
+                Set obj = New cForecastItem
+                obj.Init ProductStatusSource, arrStatus, rowIndex
+                dictMap.Add strKey, obj
+            Else
+                m_lngWarningCount = m_lngWarningCount + 1
+                mUtilities.WriteToLog ltWarning, "DataManager.BuildMap", "Duplicate item found on row " & rowIndex, , "Original: " & dictMap.item(strKey).DebugSummary()
+            End If
+        End If
+    Next rowIndex
+    Set BuildForecastItemMap = dictMap
+End Function
+
+Private Sub ValidateSuccessorLinks()
+    Dim tCheckpoint As Double: tCheckpoint = Timer
+    Dim itemKey As Variant, currentItem As cForecastItem
+    
+    mUtilities.WriteToLog ltInfo, "DataManager.Validation", "Starting validation of successor item links..."
+    Set m_dictValidatedChains = CreateObject("Scripting.Dictionary")
+    
+    For Each itemKey In m_dictForecastItemMap.Keys
+        Set currentItem = m_dictForecastItemMap.item(itemKey)
+        If Not m_dictValidatedChains.Exists(itemKey) Then ValidateSingleChain currentItem
+    Next itemKey
+    
+    LogPerformance tCheckpoint, "Validate Successor Links"
+End Sub
+
+Private Sub ValidateSingleChain(ByVal startItem As cForecastItem)
+    Dim pathTracker As Object: Set pathTracker = CreateObject("Scripting.Dictionary")
+    Dim currentItem As cForecastItem: Set currentItem = startItem
+    Dim strSuccessorKey As String, chainIsValid As Boolean: chainIsValid = True
+    
+    Do While True
+        If pathTracker.Exists(currentItem.ISD) Then
+            m_lngWarningCount = m_lngWarningCount + 1
+            mUtilities.WriteToLog ltWarning, "DataManager.Validation", "Circular reference detected.", , "Item '" & startItem.DebugSummary() & "' is part of a loop."
+            chainIsValid = False: Exit Do
+        End If
+        pathTracker.Add currentItem.ISD, 1
+        
+        If Len(currentItem.SupersededByProductID) = 0 Then Exit Do
+        
+        Dim currentItemKey As String
+        currentItemKey = currentItem.Affiliate & "|" & currentItem.ISD
+        
+        If m_dictValidatedChains.Exists(currentItemKey) Then
+            If Not m_dictValidatedChains.item(currentItemKey) Then chainIsValid = False
+            Exit Do
+        End If
+        
+        strSuccessorKey = currentItem.Affiliate & "|" & currentItem.SupersededByProductID
+        
+        If Not m_dictForecastItemMap.Exists(strSuccessorKey) Then
+            m_lngWarningCount = m_lngWarningCount + 1
+            mUtilities.WriteToLog ltWarning, "DataManager.Validation", "Successor not found (broken link).", , "Item '" & currentItem.DebugSummary() & "' lists successor ISD '" & currentItem.SupersededByProductID & "'."
+            chainIsValid = False: Exit Do
+        End If
+        
+        Set currentItem = m_dictForecastItemMap.item(strSuccessorKey)
+    Loop
+    
+    Dim pathKey As Variant
+    For Each pathKey In pathTracker.Keys
+        Dim strItemMapKey As String
+        strItemMapKey = startItem.Affiliate & "|" & pathKey
+        
+        If Not m_dictValidatedChains.Exists(strItemMapKey) Then
+            m_dictValidatedChains.Add strItemMapKey, chainIsValid
+        End If
+    Next pathKey
+End Sub
+
+'================================================================================================
+'--- PRIVATE CACHING LOGIC (OPTIMIZED) ---
+'================================================================================================
+
+Private Sub BuildHistoryCache()
+    Set m_dictHistoryCache = CreateObject("Scripting.Dictionary")
+    Dim r As Long, strKey As String, dictMonthlyValues As Object
+    
+    For r = 2 To UBound(m_arrHistoryData, 1)
+        strKey = m_KeyBuilder.BuildHistoryCacheKey( _
+            m_arrHistoryData(r, HistorySource.GetCol("Affiliate")), _
+            m_arrHistoryData(r, HistorySource.GetCol("Customer")), _
+            m_arrHistoryData(r, HistorySource.GetCol("KeyFigure")), _
+            m_arrHistoryData(r, HistorySource.GetCol("LocalItemNbr")) _
+        )
+        
+        If Not m_dictHistoryCache.Exists(strKey) Then
+            Set dictMonthlyValues = CreateObject("Scripting.Dictionary")
+            Dim dteMonth As Variant
+            For Each dteMonth In m_colHistoryMonths
+                ' This is complex to look up by date, so we still loop the array here
+                Dim c As Long
+                For c = HistorySource.StartOfMonthsCol To UBound(m_arrHistoryData, 2)
+                    If CDate(m_arrHistoryData(1, c)) = dteMonth Then
+                        dictMonthlyValues.Add dteMonth, m_arrHistoryData(r, c)
+                        Exit For
+                    End If
+                Next c
+            Next dteMonth
+            m_dictHistoryCache.Add strKey, dictMonthlyValues
+        End If
+    Next r
+End Sub
+
+Private Sub BuildDataCaches()
+    Dim r As Long, dblSum As Double
+    Dim strSubTierKey As String, strTierKey As String, strDemandKey As String
+    Dim aff As String, cust As String, tier As String, subTier As String, kf As String
+    
+    Set m_dictHistSumCache = CreateObject("Scripting.Dictionary")
+    m_dictHistSumCache.CompareMode = vbTextCompare
+    For r = 2 To UBound(m_arrHistoryData, 1)
+        aff = m_arrHistoryData(r, HistorySource.GetCol("Affiliate"))
+        cust = m_arrHistoryData(r, HistorySource.GetCol("Customer"))
+        tier = m_arrHistoryData(r, HistorySource.GetCol("Tier"))
+        subTier = m_arrHistoryData(r, HistorySource.GetCol("SubTier"))
+        kf = m_arrHistoryData(r, HistorySource.GetCol("KeyFigure"))
+        
+        strSubTierKey = m_KeyBuilder.BuildShareLevelKey(aff, cust, tier, subTier, kf)
+        strTierKey = m_KeyBuilder.BuildTotalLevelKey(aff, cust, tier, kf)
+                 
+        dblSum = 0
+        Dim c As Long
+        For c = HistorySource.StartOfMonthsCol To UBound(m_arrHistoryData, 2)
+            If IsNumeric(m_arrHistoryData(r, c)) Then dblSum = dblSum + CDbl(m_arrHistoryData(r, c))
+        Next c
+        
+        m_dictHistSumCache.item(strSubTierKey) = m_dictHistSumCache.item(strSubTierKey) + dblSum
+        m_dictHistSumCache.item(strTierKey) = m_dictHistSumCache.item(strTierKey) + dblSum
+    Next r
+
+    Set m_dictDemandCache = CreateObject("Scripting.Dictionary")
+    m_dictDemandCache.CompareMode = vbTextCompare
+    For r = 2 To UBound(m_arrDemandData, 1)
+        aff = m_arrDemandData(r, DemandSource.GetCol("Affiliate"))
+        cust = m_arrDemandData(r, DemandSource.GetCol("Customer"))
+        tier = m_arrDemandData(r, DemandSource.GetCol("Tier"))
+        kf = m_arrDemandData(r, DemandSource.GetCol("KeyFigure"))
+        
+        Dim dteMonth As Variant, col As Long
+        col = DemandSource.StartOfMonthsCol
+        For Each dteMonth In m_colForecastMonths
+            strDemandKey = m_KeyBuilder.BuildDemandKey(aff, cust, tier, kf, dteMonth)
+            
+            If IsNumeric(m_arrDemandData(r, col)) Then
+                m_dictDemandCache.Add strDemandKey, CDbl(m_arrDemandData(r, col))
+            Else
+                m_dictDemandCache.Add strDemandKey, 0
+            End If
+            col = col + 1
+        Next dteMonth
+    Next r
+End Sub
+
+'================================================================================================
+'--- UTILITY & HELPER FUNCTIONS ---
+'================================================================================================
+
+Private Function SheetExists(ByVal sheetName As String) As Boolean
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = m_wbHost.Sheets(sheetName)
+    On Error GoTo 0
+    SheetExists = Not ws Is Nothing
+End Function
+
+Private Function LoadDataToArray(ByVal ws As Worksheet) As Variant
+    If ws Is Nothing Then Exit Function
+    Dim lRow As Long: lRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    Dim lCol As Long: lCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If lRow > 1 And lCol > 0 Then LoadDataToArray = ws.Range("A1", ws.Cells(lRow, lCol)).Value
+End Function
+
+Private Function GetUniqueValues(arrData As Variant, ByVal lngCol As Long) As Object
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    dict.CompareMode = vbTextCompare
+    Dim rowIndex As Long
+    For rowIndex = 2 To UBound(arrData, 1)
+        If Not IsEmpty(arrData(rowIndex, lngCol)) Then
+            If Not dict.Exists(arrData(rowIndex, lngCol)) Then
+                dict.Add arrData(rowIndex, lngCol), 1
+            End If
+        End If
+    Next rowIndex
+    Set GetUniqueValues = dict
+End Function
+
+Private Sub LogPerformance(ByRef tCheckpoint As Double, ByVal strStageName As String)
+    mUtilities.WriteToLog ltProfile, strStageName, "Stage completed in " & format$(Timer - tCheckpoint, "#,##0.00") & "s"
+    tCheckpoint = Timer
+End Sub
+
+Private Sub Class_Terminate()
+    Set m_wbHost = Nothing
+    Set m_wsLog = Nothing
+    Set m_dictForecastItemMap = Nothing
+    Set m_dictAffiliates = Nothing
+    Set m_dictKeyFigures = Nothing
+    Set m_dictHistoryCache = Nothing
+    Set m_dictHistSumCache = Nothing
+    Set m_dictDemandCache = Nothing
+    Set m_dictValidatedChains = Nothing
+    Set m_KeyBuilder = Nothing
+    Set m_colHistoryMonths = Nothing
+    Set m_colForecastMonths = Nothing
+    Erase m_arrStatusData
+    Erase m_arrHistoryData
+    Erase m_arrDemandData
+End Sub
