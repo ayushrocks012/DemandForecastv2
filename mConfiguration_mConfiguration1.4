@@ -1,0 +1,180 @@
+'@Folder("Configuration")
+Option Explicit
+Option Private Module
+
+'================================================================================================
+' Module:      mConfiguration
+' Purpose:     This module defines all global constants and utility functions for the project.
+' Version:     40.5
+' Author:      Ayush Goyal
+' Date:        22-Aug-2025
+'
+' Change Log:
+' V40.5:       - REFACTOR: Added 'Option Private Module'.
+' V40.4:       - REFACTOR: Removed unused 'CALC_..._DIM' constants.
+' V40.3:       - REFACTOR: Moved all Enum definitions to a new 'mTypes' module.
+'================================================================================================
+
+' --- DEBUGGING & LOGGING FLAGS ---
+Public Const DEBUG_MODE As Boolean = False
+
+' --- SHEET NAME CONSTANTS ---
+Public Const SHEET_STATUS As String = "Product Status"
+Public Const SHEET_DEMAND As String = "Demand Forecast"
+Public Const SHEET_HISTORY As String = "Historical Sales"
+Public Const SHEET_LOG As String = "Log"
+
+' --- GLOBAL CONFIGURATION OBJECTS (ENCAPSULATED) ---
+Private p_dsProductStatus As cDataSource
+Private p_dsHistory As cDataSource
+Private p_dsDemand As cDataSource
+Private pTierReportCols As Collection
+Private pSummaryReportCols As Collection
+Private dictStatusMap As Object
+
+' --- Public Accessors for Configuration Objects ---
+Public Property Get ProductStatusSource() As cDataSource: Set ProductStatusSource = p_dsProductStatus: End Property
+Public Property Get HistorySource() As cDataSource: Set HistorySource = p_dsHistory: End Property
+Public Property Get DemandSource() As cDataSource: Set DemandSource = p_dsDemand: End Property
+
+'================================================================================================
+'--- GLOBAL INITIALIZATION & UTILITY FUNCTIONS ---
+'================================================================================================
+
+Public Sub InitializeAllConfigs()
+    InitializeStatusMap
+    InitializeProductStatusSource
+    InitializeHistorySource
+    InitializeDemandSource
+    InitializeTierReportConfig
+    InitializeSummaryReportConfig
+End Sub
+
+Public Sub CleanupAllConfigs()
+    Set pTierReportCols = Nothing
+    Set pSummaryReportCols = Nothing
+    Set p_dsProductStatus = Nothing
+    Set p_dsHistory = Nothing
+    Set p_dsDemand = Nothing
+    Set dictStatusMap = Nothing
+End Sub
+
+' --- Status Mapping ---
+Private Sub InitializeStatusMap()
+    Set dictStatusMap = mUtilities.NewDict()
+    dictStatusMap.Add "ACTIVE", psActive
+    dictStatusMap.Add "DISCONTINUED", psDiscontinued
+    dictStatusMap.Add "PHASE OUT", psPhaseOut
+    dictStatusMap.Add "PHASE IN", psPhaseIn
+    dictStatusMap.Add "NOT APPLICABLE", psNotApplicable
+End Sub
+
+Public Function GetStatusEnum(ByVal strStatus As String) As ProductStatus
+    Dim strKey As String: strKey = UCase$(Trim$(strStatus))
+    If dictStatusMap.Exists(strKey) Then
+        GetStatusEnum = dictStatusMap.item(strKey)
+    Else
+        GetStatusEnum = psUnknown
+    End If
+End Function
+
+Public Function GetStatusString(ByVal enmStatus As ProductStatus) As String
+    Select Case enmStatus
+        Case psActive: GetStatusString = "Active"
+        Case psDiscontinued: GetStatusString = "Discontinued"
+        Case psPhaseOut: GetStatusString = "Phase Out"
+        Case psPhaseIn: GetStatusString = "Phase In"
+        Case psNotApplicable: GetStatusString = "Not Applicable"
+        Case Else: GetStatusString = "Unknown"
+    End Select
+End Function
+
+' --- Report Configuration ---
+Public Function GetTierReportCols() As Collection
+    Set GetTierReportCols = pTierReportCols
+End Function
+
+Public Function GetSummaryReportCols() As Collection
+    Set GetSummaryReportCols = pSummaryReportCols
+End Function
+
+Private Sub InitializeTierReportConfig()
+    Set pTierReportCols = New Collection
+    AddReportColumn pTierReportCols, "Key Figures", "KeyFigure", 25, "@"
+    AddReportColumn pTierReportCols, "Affiliate", "Affiliate", 10, "@"
+    AddReportColumn pTierReportCols, "Customer", "Customer", 20, "@"
+    AddReportColumn pTierReportCols, "Forecast Tier", "ForecastTier", 30, "@"
+    AddReportColumn pTierReportCols, "Forecast Sub-Tier", "ForecastSubTier", 20, "@"
+    AddReportColumn pTierReportCols, "Local Item Nbr", "LocalItemNbr", 18, "@"
+    AddReportColumn pTierReportCols, "Desc", "Description", 40, "@"
+    AddReportColumn pTierReportCols, "I-S-D", "ISD", 15, "@"
+    AddReportColumn pTierReportCols, "Status", "StatusString", 20, "@"
+    AddReportColumn pTierReportCols, "Phase Out Month", "PhaseOutDate", 15, "mmm-yy"
+End Sub
+
+Private Sub InitializeSummaryReportConfig()
+    Set pSummaryReportCols = New Collection
+    AddReportColumn pSummaryReportCols, "Affiliate", "Affiliate", 10, "@"
+    AddReportColumn pSummaryReportCols, "Customer", "Customer", 20, "@"
+    AddReportColumn pSummaryReportCols, "Forecast Tier", "ForecastTier", 30, "@"
+    AddReportColumn pSummaryReportCols, "Forecast Sub-Tier", "ForecastSubTier", 20, "@"
+    AddReportColumn pSummaryReportCols, "Local Item Nbr", "LocalItemNbr", 18, "@"
+    AddReportColumn pSummaryReportCols, "Desc", "Description", 40, "@"
+    AddReportColumn pSummaryReportCols, "I-S-D", "ISD", 15, "@"
+    AddReportColumn pSummaryReportCols, "Status", "StatusString", 20, "@"
+    AddReportColumn pSummaryReportCols, "Phase Out Month", "PhaseOutDate", 15, "mmm-yy"
+End Sub
+
+Private Sub AddReportColumn(ByVal colReport As Collection, ByVal header As String, ByVal prop As String, ByVal width As Double, ByVal format As String)
+    Dim col As cReportColumn
+    Set col = New cReportColumn
+    col.HeaderText = header
+    col.SourceProperty = prop
+    col.ColumnWidth = width
+    col.NumberFormat = format
+    colReport.Add col
+End Sub
+
+' --- Data Source Configuration ---
+Private Sub InitializeProductStatusSource()
+    Set p_dsProductStatus = New cDataSource
+    With p_dsProductStatus
+        .sheetName = SHEET_STATUS
+        .MapField "Affiliate", 1
+        .MapField "Tier", 2
+        .MapField "SubTier", 3
+        .MapField "LocalItemNbr", 4
+        .MapField "Description", 5
+        .MapField "ISD", 6
+        .MapField "Status", 7
+        .MapField "PhaseOutDate", 8
+        .MapField "PhaseOutPercent", 9
+        .MapField "SupersededBy", 10
+    End With
+End Sub
+
+Private Sub InitializeHistorySource()
+    Set p_dsHistory = New cDataSource
+    With p_dsHistory
+        .sheetName = SHEET_HISTORY
+        .MapField "Affiliate", 1
+        .MapField "Tier", 2
+        .MapField "SubTier", 3
+        .MapField "Customer", 4
+        .MapField "KeyFigure", 5
+        .MapField "LocalItemNbr", 6
+        .StartOfMonthsCol = 9
+    End With
+End Sub
+
+Private Sub InitializeDemandSource()
+    Set p_dsDemand = New cDataSource
+    With p_dsDemand
+        .sheetName = SHEET_DEMAND
+        .MapField "Affiliate", 1
+        .MapField "Customer", 2
+        .MapField "KeyFigure", 3
+        .MapField "Tier", 4
+        .StartOfMonthsCol = 5
+    End With
+End Sub
