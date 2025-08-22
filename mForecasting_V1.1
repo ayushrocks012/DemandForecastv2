@@ -4,17 +4,14 @@ Option Explicit
 '================================================================================================
 ' Module:      mForecasting
 ' Purpose:     Main orchestrator for the forecasting process.
-' Version:     46.0
+' Version:     46.1
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
-' V46.0:       - REFACTOR: Removed local logging functions (WriteToLog, GetLogTypeString)
-'                and now uses the new mUtilities module.
-'              - REFACTOR: Initializes the central logger in InitializeRun.
-'              - REFACTOR: Updated the main loop in ProcessAllAffiliates to use the new,
-'                simplified interface for cCalculationEngine.Execute, which now only
-'                takes 3 parameters.
+' V46.1:       - BUGFIX: Corrected the call to cReportGenerator.Init to match its new
+'                signature, resolving a "wrong number of arguments" compile error.
+' V46.0:       - REFACTOR: Centralized logging and simplified cCalculationEngine interface.
 ' V45.1:       - REFACTOR: Removed obsolete property assignments for cCalculationEngine.
 '================================================================================================
 
@@ -34,7 +31,7 @@ Public Sub UpdateForecast()
     If Not InitializeRun() Then GoTo Main_Exit
     
     Set dataManager = New cDataManager
-    dataManager.Init wbHost, wsLog
+    dataManager.Init wbHost
     If Not dataManager.LoadAndProcessData() Then GoTo Main_Exit
     
     ProcessAllAffiliates dataManager
@@ -92,7 +89,8 @@ Private Sub ProcessAllAffiliates(ByVal dataManager As cDataManager)
     
     Dim reporter As cReportGenerator
     Set reporter = New cReportGenerator
-    reporter.Init dataManager, wsLog, wbHost.Path
+    ' THE FIX IS HERE: The wsLog parameter has been removed from the call.
+    reporter.Init dataManager, wbHost.Path
     
     lngTotal = dataManager.Affiliates.Count
     If lngTotal = 0 Then
