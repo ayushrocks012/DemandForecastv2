@@ -4,18 +4,16 @@ Option Explicit
 '================================================================================================
 ' Class:       cDataManager
 ' Purpose:     Encapsulates all data loading, validation, and caching logic.
-' Version:     4.0
+' Version:     4.1
 ' Author:      Ayush Goyal
 ' Date:        22-Aug-2025
 '
 ' Change Log:
-' V4.0:        - PERFORMANCE: Major refactoring to eliminate repeated array scans. The class
-'                now pre-computes structured dictionaries (e.g., CustomersByAffiliate)
-'                during the loading process for near-instant lookups later.
-'              - PERFORMANCE: Removed the slow, repetitive GetUniqueValues function.
-'              - REFACTOR: Added new properties to expose the pre-computed lookup maps.
+' V4.1:        - REFACTOR: Removed the unused public property 'DemandDataArray' as it was
+'                made obsolete by the new pre-computed lookup maps.
+' V4.0:        - PERFORMANCE: Major refactoring to eliminate repeated array scans by
+'                pre-computing structured dictionaries for fast lookups.
 ' V3.3:        - BUGFIX: Corrected data integrity issue in BuildHistoryCache.
-' V3.2:        - BUGFIX: Made dictionary increment logic robust.
 '================================================================================================
 
 ' --- Private Member Variables ---
@@ -49,7 +47,7 @@ Public Property Get Affiliates() As Object: Set Affiliates = m_dictAffiliates: E
 Public Property Get KeyFigures() As Object: Set KeyFigures = m_dictKeyFigures: End Property
 Public Property Get HistorySumCache() As Object: Set HistorySumCache = m_dictHistSumCache: End Property
 Public Property Get DemandCache() As Object: Set DemandCache = m_dictDemandCache: End Property
-Public Property Get DemandDataArray() As Variant: DemandDataArray = m_arrDemandData: End Property
+'Public Property Get DemandDataArray() As Variant: DemandDataArray = m_arrDemandData ' No longer used externally
 Public Property Get HistoryDataArray() As Variant: HistoryDataArray = m_arrHistoryData: End Property
 Public Property Get HistoryCache() As Object: Set HistoryCache = m_dictHistoryCache: End Property
 Public Property Get WarningCount() As Long: WarningCount = m_lngWarningCount: End Property
